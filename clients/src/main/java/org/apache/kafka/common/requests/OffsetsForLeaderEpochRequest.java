@@ -16,118 +16,142 @@
  */
 package org.apache.kafka.common.requests;
 
-import org.apache.kafka.common.errors.UnsupportedVersionException;
-import org.apache.kafka.common.message.OffsetForLeaderEpochRequestData;
-import org.apache.kafka.common.message.OffsetForLeaderEpochRequestData.OffsetForLeaderTopicCollection;
-import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData;
-import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData.EpochEndOffset;
-import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData.OffsetForLeaderTopicResult;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.Readable;
+import org.apache.kafka.common.protocol.types.ArrayOf;
+import org.apache.kafka.common.protocol.types.Field;
+import org.apache.kafka.common.protocol.types.Schema;
+import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.utils.CollectionUtils;
 
-import static org.apache.kafka.common.requests.OffsetsForLeaderEpochResponse.UNDEFINED_EPOCH;
-import static org.apache.kafka.common.requests.OffsetsForLeaderEpochResponse.UNDEFINED_EPOCH_OFFSET;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import static org.apache.kafka.common.protocol.CommonFields.PARTITION_ID;
+import static org.apache.kafka.common.protocol.CommonFields.TOPIC_NAME;
+import static org.apache.kafka.common.protocol.types.Type.INT32;
 
 public class OffsetsForLeaderEpochRequest extends AbstractRequest {
+    private static final String TOPICS_KEY_NAME = "topics";
+    private static final String PARTITIONS_KEY_NAME = "partitions";
+    private static final String LEADER_EPOCH = "leader_epoch";
 
-    /**
-     * Sentinel replica_id value to indicate a regular consumer rather than another broker
-     */
-    public static final int CONSUMER_REPLICA_ID = -1;
+    /* Offsets for Leader Epoch api */
+    private static final Schema OFFSET_FOR_LEADER_EPOCH_REQUEST_PARTITION_V0 = new Schema(
+            PARTITION_ID,
+            new Field(LEADER_EPOCH, INT32, "The epoch"));
+    private static final Schema OFFSET_FOR_LEADER_EPOCH_REQUEST_TOPIC_V0 = new Schema(
+            TOPIC_NAME,
+            new Field(PARTITIONS_KEY_NAME, new ArrayOf(OFFSET_FOR_LEADER_EPOCH_REQUEST_PARTITION_V0)));
+    private static final Schema OFFSET_FOR_LEADER_EPOCH_REQUEST_V0 = new Schema(
+            new Field(TOPICS_KEY_NAME, new ArrayOf(OFFSET_FOR_LEADER_EPOCH_REQUEST_TOPIC_V0), "An array of topics to get epochs for"));
 
-    /**
-     * Sentinel replica_id which indicates either a debug consumer or a replica which is using
-     * an old version of the protocol.
-     */
-    public static final int DEBUGGING_REPLICA_ID = -2;
+    public static Schema[] schemaVersions() {
+        return new Schema[]{OFFSET_FOR_LEADER_EPOCH_REQUEST_V0};
+    }
 
-    private final OffsetForLeaderEpochRequestData data;
+    private Map<TopicPartition, Integer> epochsByPartition;
+
+    public Map<TopicPartition, Integer> epochsByTopicPartition() {
+        return epochsByPartition;
+    }
 
     public static class Builder extends AbstractRequest.Builder<OffsetsForLeaderEpochRequest> {
-        private final OffsetForLeaderEpochRequestData data;
+        private Map<TopicPartition, Integer> epochsByPartition = new HashMap<>();
 
-        Builder(short oldestAllowedVersion, short latestAllowedVersion, OffsetForLeaderEpochRequestData data) {
-            super(ApiKeys.OFFSET_FOR_LEADER_EPOCH, oldestAllowedVersion, latestAllowedVersion);
-            this.data = data;
+        public Builder() {
+            super(ApiKeys.OFFSET_FOR_LEADER_EPOCH);
         }
 
-        public static Builder forConsumer(OffsetForLeaderTopicCollection epochsByPartition) {
-            // Old versions of this API require CLUSTER permission which is not typically granted
-            // to clients. Beginning with version 3, the broker requires only TOPIC Describe
-            // permission for the topic of each requested partition. In order to ensure client
-            // compatibility, we only send this request when we can guarantee the relaxed permissions.
-            OffsetForLeaderEpochRequestData data = new OffsetForLeaderEpochRequestData();
-            data.setReplicaId(CONSUMER_REPLICA_ID);
-            data.setTopics(epochsByPartition);
-            return new Builder((short) 3, ApiKeys.OFFSET_FOR_LEADER_EPOCH.latestVersion(), data);
+        public Builder(Map<TopicPartition, Integer> epochsByPartition) {
+            super(ApiKeys.OFFSET_FOR_LEADER_EPOCH);
+            this.epochsByPartition = epochsByPartition;
         }
 
-        public static Builder forFollower(OffsetForLeaderTopicCollection epochsByPartition, int replicaId) {
-            OffsetForLeaderEpochRequestData data = new OffsetForLeaderEpochRequestData();
-            data.setReplicaId(replicaId);
-            data.setTopics(epochsByPartition);
-            // If we introduce new versions, we should gate them behind the appropriate metadata version
-            return new Builder((short) 4, (short) 4, data);
+        public Builder add(TopicPartition topicPartition, Integer epoch) {
+            epochsByPartition.put(topicPartition, epoch);
+            return this;
         }
 
         @Override
         public OffsetsForLeaderEpochRequest build(short version) {
-            if (version < oldestAllowedVersion() || version > latestAllowedVersion())
-                throw new UnsupportedVersionException("Cannot build " + this + " with version " + version);
+            return new OffsetsForLeaderEpochRequest(epochsByPartition, version);
+        }
 
-            return new OffsetsForLeaderEpochRequest(data, version);
+        public static OffsetsForLeaderEpochRequest parse(ByteBuffer buffer, short version) {
+            return new OffsetsForLeaderEpochRequest(ApiKeys.OFFSET_FOR_LEADER_EPOCH.parseRequest(version, buffer), version);
         }
 
         @Override
         public String toString() {
-            return data.toString();
+            StringBuilder bld = new StringBuilder();
+            bld.append("(type=OffsetForLeaderEpochRequest, ").
+                    append("epochsByTopic=").append(epochsByPartition).
+                    append(")");
+            return bld.toString();
         }
     }
 
-    public OffsetsForLeaderEpochRequest(OffsetForLeaderEpochRequestData data, short version) {
-        super(ApiKeys.OFFSET_FOR_LEADER_EPOCH, version);
-        this.data = data;
+    public OffsetsForLeaderEpochRequest(Map<TopicPartition, Integer> epochsByPartition, short version) {
+        super(version);
+        this.epochsByPartition = epochsByPartition;
+    }
+
+    public OffsetsForLeaderEpochRequest(Struct struct, short version) {
+        super(version);
+        epochsByPartition = new HashMap<>();
+        for (Object topicAndEpochsObj : struct.getArray(TOPICS_KEY_NAME)) {
+            Struct topicAndEpochs = (Struct) topicAndEpochsObj;
+            String topic = topicAndEpochs.get(TOPIC_NAME);
+            for (Object partitionAndEpochObj : topicAndEpochs.getArray(PARTITIONS_KEY_NAME)) {
+                Struct partitionAndEpoch = (Struct) partitionAndEpochObj;
+                int partitionId = partitionAndEpoch.get(PARTITION_ID);
+                int epoch = partitionAndEpoch.getInt(LEADER_EPOCH);
+                TopicPartition tp = new TopicPartition(topic, partitionId);
+                epochsByPartition.put(tp, epoch);
+            }
+        }
+    }
+
+    public static OffsetsForLeaderEpochRequest parse(ByteBuffer buffer, short versionId) {
+        return new OffsetsForLeaderEpochRequest(ApiKeys.OFFSET_FOR_LEADER_EPOCH.parseRequest(versionId, buffer), versionId);
     }
 
     @Override
-    public OffsetForLeaderEpochRequestData data() {
-        return data;
-    }
+    protected Struct toStruct() {
+        Struct requestStruct = new Struct(ApiKeys.OFFSET_FOR_LEADER_EPOCH.requestSchema(version()));
 
-    public int replicaId() {
-        return data.replicaId();
-    }
+        Map<String, Map<Integer, Integer>> topicsToPartitionEpochs = CollectionUtils.groupDataByTopic(epochsByPartition);
 
-    public static OffsetsForLeaderEpochRequest parse(Readable readable, short version) {
-        return new OffsetsForLeaderEpochRequest(new OffsetForLeaderEpochRequestData(readable, version), version);
+        List<Struct> topics = new ArrayList<>();
+        for (Map.Entry<String, Map<Integer, Integer>> topicToEpochs : topicsToPartitionEpochs.entrySet()) {
+            Struct topicsStruct = requestStruct.instance(TOPICS_KEY_NAME);
+            topicsStruct.set(TOPIC_NAME, topicToEpochs.getKey());
+            List<Struct> partitions = new ArrayList<>();
+            for (Map.Entry<Integer, Integer> partitionEpoch : topicToEpochs.getValue().entrySet()) {
+                Struct partitionStruct = topicsStruct.instance(PARTITIONS_KEY_NAME);
+                partitionStruct.set(PARTITION_ID, partitionEpoch.getKey());
+                partitionStruct.set(LEADER_EPOCH, partitionEpoch.getValue());
+                partitions.add(partitionStruct);
+            }
+            topicsStruct.set(PARTITIONS_KEY_NAME, partitions.toArray());
+            topics.add(topicsStruct);
+        }
+        requestStruct.set(TOPICS_KEY_NAME, topics.toArray());
+        return requestStruct;
     }
 
     @Override
     public AbstractResponse getErrorResponse(int throttleTimeMs, Throwable e) {
         Errors error = Errors.forException(e);
-
-        OffsetForLeaderEpochResponseData responseData = new OffsetForLeaderEpochResponseData();
-        data.topics().forEach(topic -> {
-            OffsetForLeaderTopicResult topicData = new OffsetForLeaderTopicResult()
-                .setTopic(topic.topic());
-            topic.partitions().forEach(partition ->
-                topicData.partitions().add(new EpochEndOffset()
-                    .setPartition(partition.partition())
-                    .setErrorCode(error.code())
-                    .setLeaderEpoch(UNDEFINED_EPOCH)
-                    .setEndOffset(UNDEFINED_EPOCH_OFFSET)));
-            responseData.topics().add(topicData);
-        });
-
-        return new OffsetsForLeaderEpochResponse(responseData);
-    }
-
-    /**
-     * Check whether a broker allows Topic-level permissions in order to use the
-     * OffsetForLeaderEpoch API. Old versions require Cluster permission.
-     */
-    public static boolean supportsTopicPermission(short latestUsableVersion) {
-        return latestUsableVersion >= 3;
+        Map<TopicPartition, EpochEndOffset> errorResponse = new HashMap<>();
+        for (TopicPartition tp : epochsByPartition.keySet()) {
+            errorResponse.put(tp, new EpochEndOffset(error, EpochEndOffset.UNDEFINED_EPOCH_OFFSET));
+        }
+        return new OffsetsForLeaderEpochResponse(errorResponse);
     }
 }

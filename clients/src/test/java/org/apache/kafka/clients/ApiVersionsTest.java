@@ -16,51 +16,31 @@
  */
 package org.apache.kafka.clients;
 
-import org.apache.kafka.common.message.ApiVersionsResponseData;
+import org.apache.kafka.common.protocol.ApiKeys;
+import org.apache.kafka.common.record.RecordBatch;
+import org.apache.kafka.common.requests.ApiVersionsResponse;
+import org.junit.Test;
 
-import org.junit.jupiter.api.Test;
+import java.util.Collections;
 
-import java.util.Arrays;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.Assert.assertEquals;
 
 public class ApiVersionsTest {
 
     @Test
-    public void testFinalizedFeaturesUpdate() {
+    public void testMaxUsableProduceMagic() {
         ApiVersions apiVersions = new ApiVersions();
-        assertEquals(-1, apiVersions.getMaxFinalizedFeaturesEpoch());
+        assertEquals(RecordBatch.CURRENT_MAGIC_VALUE, apiVersions.maxUsableProduceMagic());
 
-        apiVersions.update("2",
-            new NodeApiVersions(NodeApiVersions.create().allSupportedApiVersions().values(),
-                Arrays.asList(new ApiVersionsResponseData.SupportedFeatureKey()
-                    .setName("transaction.version")
-                    .setMaxVersion((short) 2)
-                    .setMinVersion((short) 0)),
-                Arrays.asList(new ApiVersionsResponseData.FinalizedFeatureKey()
-                    .setName("transaction.version")
-                    .setMaxVersionLevel((short) 2)
-                    .setMinVersionLevel((short) 2)),
-                1));
-        ApiVersions.FinalizedFeaturesInfo info = apiVersions.getFinalizedFeaturesInfo();
-        assertEquals(1, info.finalizedFeaturesEpoch);
-        assertEquals((short) 2, info.finalizedFeatures.get("transaction.version"));
+        apiVersions.update("0", NodeApiVersions.create());
+        assertEquals(RecordBatch.CURRENT_MAGIC_VALUE, apiVersions.maxUsableProduceMagic());
 
-        apiVersions.update("1",
-            new NodeApiVersions(NodeApiVersions.create().allSupportedApiVersions().values(),
-                Arrays.asList(new ApiVersionsResponseData.SupportedFeatureKey()
-                    .setName("transaction.version")
-                    .setMaxVersion((short) 2)
-                    .setMinVersion((short) 0)),
-                Arrays.asList(new ApiVersionsResponseData.FinalizedFeatureKey()
-                    .setName("transaction.version")
-                    .setMaxVersionLevel((short) 1)
-                    .setMinVersionLevel((short) 1)),
-                0));
-        // The stale update should be fenced.
-        info = apiVersions.getFinalizedFeaturesInfo();
-        assertEquals(1, info.finalizedFeaturesEpoch);
-        assertEquals((short) 2, info.finalizedFeatures.get("transaction.version"));
+        apiVersions.update("1", NodeApiVersions.create(Collections.singleton(
+                new ApiVersionsResponse.ApiVersion(ApiKeys.PRODUCE.id, (short) 0, (short) 2))));
+        assertEquals(RecordBatch.MAGIC_VALUE_V1, apiVersions.maxUsableProduceMagic());
+
+        apiVersions.remove("1");
+        assertEquals(RecordBatch.CURRENT_MAGIC_VALUE, apiVersions.maxUsableProduceMagic());
     }
 
 }

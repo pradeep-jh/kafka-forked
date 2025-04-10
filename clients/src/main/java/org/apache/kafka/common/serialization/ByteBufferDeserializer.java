@@ -16,13 +16,15 @@
  */
 package org.apache.kafka.common.serialization;
 
-import org.apache.kafka.common.header.Headers;
-
 import java.nio.ByteBuffer;
+import java.util.Map;
 
 public class ByteBufferDeserializer implements Deserializer<ByteBuffer> {
 
-    @Override
+    public void configure(Map<String, ?> configs, boolean isKey) {
+        // nothing to do
+    }
+
     public ByteBuffer deserialize(String topic, byte[] data) {
         if (data == null)
             return null;
@@ -30,8 +32,7 @@ public class ByteBufferDeserializer implements Deserializer<ByteBuffer> {
         return ByteBuffer.wrap(data);
     }
 
-    @Override
-    public ByteBuffer deserialize(String topic, Headers headers, ByteBuffer data) {
-        return data;
+    public void close() {
+        // nothing to do
     }
 }

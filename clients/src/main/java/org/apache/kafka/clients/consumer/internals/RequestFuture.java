@@ -18,15 +18,13 @@ package org.apache.kafka.clients.consumer.internals;
 
 import org.apache.kafka.common.errors.RetriableException;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.utils.Timer;
-
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Result of an asynchronous request from {@link ConsumerNetworkClient}. Use {@link ConsumerNetworkClient#poll(Timer)}
+ * Result of an asynchronous request from {@link ConsumerNetworkClient}. Use {@link ConsumerNetworkClient#poll(long)}
  * (and variants) to finish a request future. Use {@link #isDone()} to check if the future is complete, and
  * {@link #succeeded()} to check if the request completed successfully. Typical usage might look like this:
  *
@@ -92,7 +90,7 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
     }
 
     /**
-     * Check if the request is retriable. This is a convenience method for checking if
+     * Check if the request is retriable (convenience method for checking if
      * the exception is an instance of {@link RetriableException}.
      * @return true if it is retriable, false otherwise
      * @throws IllegalStateException if the future is not complete or completed successfully
@@ -200,7 +198,7 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
      */
     public <S> RequestFuture<S> compose(final RequestFutureAdapter<T, S> adapter) {
         final RequestFuture<S> adapted = new RequestFuture<>();
-        addListener(new RequestFutureListener<>() {
+        addListener(new RequestFutureListener<T>() {
             @Override
             public void onSuccess(T value) {
                 adapter.onSuccess(value, adapted);
@@ -215,7 +213,7 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
     }
 
     public void chain(final RequestFuture<T> future) {
-        addListener(new RequestFutureListener<>() {
+        addListener(new RequestFutureListener<T>() {
             @Override
             public void onSuccess(T value) {
                 future.complete(value);
@@ -244,8 +242,16 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
         return failure(Errors.COORDINATOR_NOT_AVAILABLE.exception());
     }
 
+    public static <T> RequestFuture<T> leaderNotAvailable() {
+        return failure(Errors.LEADER_NOT_AVAILABLE.exception());
+    }
+
     public static <T> RequestFuture<T> noBrokersAvailable() {
         return failure(new NoAvailableBrokersException());
+    }
+
+    public static <T> RequestFuture<T> staleMetadata() {
+        return failure(new StaleMetadataException());
     }
 
     @Override

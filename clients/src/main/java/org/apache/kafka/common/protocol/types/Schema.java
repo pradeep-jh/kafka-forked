@@ -24,39 +24,19 @@ import java.util.Objects;
 /**
  * The schema for a compound record definition
  */
-public final class Schema extends Type {
-    private static final Object[] NO_VALUES = new Object[0];
+public class Schema extends Type {
 
     private final BoundField[] fields;
     private final Map<String, BoundField> fieldsByName;
-    private final boolean tolerateMissingFieldsWithDefaults;
-    private final Struct cachedStruct;
 
     /**
      * Construct the schema with a given list of its field values
      *
-     * @param fs the fields of this schema
-     *
      * @throws SchemaException If the given list have duplicate fields
      */
     public Schema(Field... fs) {
-        this(false, fs);
-    }
-
-    /**
-     * Construct the schema with a given list of its field values and the ability to tolerate
-     * missing optional fields with defaults at the end of the schema definition.
-     *
-     * @param tolerateMissingFieldsWithDefaults whether to accept records with missing optional
-     * fields the end of the schema
-     * @param fs the fields of this schema
-     *
-     * @throws SchemaException If the given list have duplicate fields
-     */
-    public Schema(boolean tolerateMissingFieldsWithDefaults, Field... fs) {
         this.fields = new BoundField[fs.length];
         this.fieldsByName = new HashMap<>();
-        this.tolerateMissingFieldsWithDefaults = tolerateMissingFieldsWithDefaults;
         for (int i = 0; i < this.fields.length; i++) {
             Field def = fs[i];
             if (fieldsByName.containsKey(def.name))
@@ -64,9 +44,6 @@ public final class Schema extends Type {
             this.fields[i] = new BoundField(def, this, i);
             this.fieldsByName.put(def.name, this.fields[i]);
         }
-        //6 schemas have no fields at the time of this writing (3 versions each of list_groups and api_versions)
-        //for such schemas there's no point in even creating a unique Struct object when deserializing.
-        this.cachedStruct = this.fields.length > 0 ? null : new Struct(this, NO_VALUES);
     }
 
     /**
@@ -87,32 +64,14 @@ public final class Schema extends Type {
     }
 
     /**
-     * Read a struct from the buffer. If this schema is configured to tolerate missing
-     * optional fields at the end of the buffer, these fields are replaced with their default
-     * values; otherwise, if the schema does not tolerate missing fields, or if missing fields
-     * don't have a default value, a {@code SchemaException} is thrown to signify that mandatory
-     * fields are missing.
+     * Read a struct from the buffer
      */
     @Override
     public Struct read(ByteBuffer buffer) {
-        if (cachedStruct != null) {
-            return cachedStruct;
-        }
         Object[] objects = new Object[fields.length];
         for (int i = 0; i < fields.length; i++) {
             try {
-                if (tolerateMissingFieldsWithDefaults) {
-                    if (buffer.hasRemaining()) {
-                        objects[i] = fields[i].def.type.read(buffer);
-                    } else if (fields[i].def.hasDefaultValue) {
-                        objects[i] = fields[i].def.defaultValue;
-                    } else {
-                        throw new SchemaException("Missing value for field '" + fields[i].def.name +
-                                "' which has no default value.");
-                    }
-                } else {
-                    objects[i] = fields[i].def.type.read(buffer);
-                }
+                objects[i] = fields[i].def.type.read(buffer);
             } catch (Exception e) {
                 throw new SchemaException("Error reading field '" + fields[i].def.name + "': " +
                                           (e.getMessage() == null ? e.getClass().getName() : e.getMessage()));
@@ -148,7 +107,7 @@ public final class Schema extends Type {
 
     /**
      * Get a field by its slot in the record array
-     *
+     * 
      * @param slot The slot at which this field sits
      * @return The field
      */
@@ -158,7 +117,7 @@ public final class Schema extends Type {
 
     /**
      * Get a field by its name
-     *
+     * 
      * @param name The name of the field
      * @return The field
      */
@@ -217,9 +176,10 @@ public final class Schema extends Type {
             visitor.visit(schema);
             for (BoundField f : schema.fields())
                 handleNode(f.def.type, visitor);
-        } else if (node.isArray()) {
-            visitor.visit(node);
-            handleNode(node.arrayElementType().get(), visitor);
+        } else if (node instanceof ArrayOf) {
+            ArrayOf array = (ArrayOf) node;
+            visitor.visit(array);
+            handleNode(array.type(), visitor);
         } else {
             visitor.visit(node);
         }
@@ -228,8 +188,11 @@ public final class Schema extends Type {
     /**
      * Override one or more of the visit methods with the desired logic.
      */
-    public abstract static class Visitor {
+    public static abstract class Visitor {
         public void visit(Schema schema) {}
+        public void visit(ArrayOf array) {}
         public void visit(Type field) {}
     }
+
+
 }

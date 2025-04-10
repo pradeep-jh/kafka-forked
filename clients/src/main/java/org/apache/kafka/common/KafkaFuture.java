@@ -16,50 +16,70 @@
  */
 package org.apache.kafka.common;
 
+import org.apache.kafka.common.annotation.InterfaceStability;
 import org.apache.kafka.common.internals.KafkaFutureImpl;
 
-import java.util.Arrays;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
- * A flexible future which supports call chaining and other asynchronous programming patterns.
+ * A flexible future which supports call chaining and other asynchronous programming patterns. This will
+ * eventually become a thin shim on top of Java 8's CompletableFuture.
  *
- * <h3>Relation to {@code CompletionStage}</h3>
- * <p>It is possible to obtain a {@code CompletionStage} from a
- * {@code KafkaFuture} instance by calling {@link #toCompletionStage()}.
- * If converting {@link KafkaFuture#whenComplete(BiConsumer)} or {@link KafkaFuture#thenApply(BaseFunction)} to
- * {@link CompletableFuture#whenComplete(java.util.function.BiConsumer)} or
- * {@link CompletableFuture#thenApply(java.util.function.Function)} be aware that the returned
- * {@code KafkaFuture} will fail with an {@code ExecutionException}, whereas a {@code CompletionStage} fails
- * with a {@code CompletionException}.
+ * The API for this class is still evolving and we may break compatibility in minor releases, if necessary.
  */
+@InterfaceStability.Evolving
 public abstract class KafkaFuture<T> implements Future<T> {
     /**
      * A function which takes objects of type A and returns objects of type B.
      */
-    @FunctionalInterface
-    public interface BaseFunction<A, B> {
-        B apply(A a);
+    public static abstract class Function<A, B> {
+        public abstract B apply(A a);
     }
 
     /**
      * A consumer of two different types of object.
      */
-    @FunctionalInterface
-    public interface BiConsumer<A, B> {
-        void accept(A a, B b);
+    public static abstract class BiConsumer<A, B> {
+        public abstract void accept(A a, B b);
+    }
+
+    private static class AllOfAdapter<R> extends BiConsumer<R, Throwable> {
+        private int remainingResponses;
+        private KafkaFuture<?> future;
+
+        public AllOfAdapter(int remainingResponses, KafkaFuture<?> future) {
+            this.remainingResponses = remainingResponses;
+            this.future = future;
+            maybeComplete();
+        }
+
+        @Override
+        public synchronized void accept(R newValue, Throwable exception) {
+            if (remainingResponses <= 0)
+                return;
+            if (exception != null) {
+                remainingResponses = 0;
+                future.completeExceptionally(exception);
+            } else {
+                remainingResponses--;
+                maybeComplete();
+            }
+        }
+
+        private void maybeComplete() {
+            if (remainingResponses <= 0)
+                future.complete(null);
+        }
     }
 
     /** 
      * Returns a new KafkaFuture that is already completed with the given value.
      */
     public static <U> KafkaFuture<U> completedFuture(U value) {
-        KafkaFuture<U> future = new KafkaFutureImpl<>();
+        KafkaFuture<U> future = new KafkaFutureImpl<U>();
         future.complete(value);
         return future;
     }
@@ -70,75 +90,21 @@ public abstract class KafkaFuture<T> implements Future<T> {
      * an exception, which one gets returned is arbitrarily chosen.
      */
     public static KafkaFuture<Void> allOf(KafkaFuture<?>... futures) {
-        KafkaFutureImpl<Void> result = new KafkaFutureImpl<>();
-        CompletableFuture.allOf(Arrays.stream(futures)
-                .map(kafkaFuture -> {
-                    // Safe since KafkaFuture's only subclass is KafkaFuture for which toCompletionStage()
-                    // always return a CF.
-                    return (CompletableFuture<?>) kafkaFuture.toCompletionStage();
-                })
-                .toArray(CompletableFuture[]::new)).whenComplete((value, ex) -> {
-                    if (ex == null) {
-                        result.complete(value);
-                    } else {
-                        // Have to unwrap the CompletionException which allOf() introduced
-                        result.completeExceptionally(ex.getCause());
-                    }
-                });
-
-        return result;
+        KafkaFuture<Void> allOfFuture = new KafkaFutureImpl<>();
+        AllOfAdapter<Object> allOfWaiter = new AllOfAdapter<>(futures.length, allOfFuture);
+        for (KafkaFuture<?> future : futures) {
+            future.addWaiter(allOfWaiter);
+        }
+        return allOfFuture;
     }
-
-    /**
-     * Gets a {@code CompletionStage} with the same completion properties as this {@code KafkaFuture}.
-     * The returned instance will complete when this future completes and in the same way
-     * (with the same result or exception).
-     *
-     * <p>Calling {@code toCompletableFuture()} on the returned instance will yield a {@code CompletableFuture},
-     * but invocation of the completion methods ({@code complete()} and other methods in the {@code complete*()}
-     * and {@code obtrude*()} families) on that {@code CompletableFuture} instance will result in
-     * {@code UnsupportedOperationException} being thrown. Unlike a "minimal" {@code CompletableFuture},
-     * the {@code get*()} and other methods of {@code CompletableFuture} that are not inherited from
-     * {@code CompletionStage} will work normally.
-     *
-     * <p>If you want to block on the completion of a KafkaFuture you should use
-     * {@link #get()}, {@link #get(long, TimeUnit)} or {@link #getNow(Object)}, rather than calling
-     * {@code .toCompletionStage().toCompletableFuture().get()} etc.
-     *
-     * @since Kafka 3.0
-     */
-    public abstract CompletionStage<T> toCompletionStage();
 
     /**
      * Returns a new KafkaFuture that, when this future completes normally, is executed with this
      * futures's result as the argument to the supplied function.
-     *
-     * The function may be invoked by the thread that calls {@code thenApply} or it may be invoked by the thread that
-     * completes the future.
      */
-    public abstract <R> KafkaFuture<R> thenApply(BaseFunction<T, R> function);
+    public abstract <R> KafkaFuture<R> thenApply(Function<T, R> function);
 
-    /**
-     * Returns a new KafkaFuture with the same result or exception as this future, that executes the given action
-     * when this future completes.
-     *
-     * When this future is done, the given action is invoked with the result (or null if none) and the exception
-     * (or null if none) of this future as arguments.
-     *
-     * The returned future is completed when the action returns.
-     * The supplied action should not throw an exception. However, if it does, the following rules apply:
-     * if this future completed normally but the supplied action throws an exception, then the returned future completes
-     * exceptionally with the supplied action's exception.
-     * Or, if this future completed exceptionally and the supplied action throws an exception, then the returned future
-     * completes exceptionally with this future's exception.
-     *
-     * The action may be invoked by the thread that calls {@code whenComplete} or it may be invoked by the thread that
-     * completes the future.
-     *
-     * @param action the action to perform
-     * @return the new future
-     */
-    public abstract KafkaFuture<T> whenComplete(BiConsumer<? super T, ? super Throwable> action);
+    protected abstract void addWaiter(BiConsumer<? super T, ? super Throwable> action);
 
     /**
      * If not already completed, sets the value returned by get() and related methods to the given

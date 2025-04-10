@@ -16,64 +16,90 @@
  */
 package org.apache.kafka.streams.state.internals;
 
-import org.apache.kafka.common.header.Header;
-import org.apache.kafka.common.header.Headers;
-import org.apache.kafka.common.header.internals.RecordHeader;
-import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.streams.KeyValue;
 import org.apache.kafka.streams.processor.internals.MockStreamsMetrics;
-import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
+import org.junit.Before;
+import org.junit.Test;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 
 public class NamedCacheTest {
 
-    private final Headers headers = new RecordHeaders(new Header[]{new RecordHeader("key", "value".getBytes())});
     private NamedCache cache;
-
-    @BeforeEach
+    private MockStreamsMetrics streamMetrics;
+    private final String taskIDString = "0.0";
+    private final String underlyingStoreName = "storeName";
+    @Before
     public void setUp() {
-        final Metrics innerMetrics = new Metrics();
-        final StreamsMetricsImpl metrics = new MockStreamsMetrics(innerMetrics);
-        cache = new NamedCache("dummy-name", metrics);
+        streamMetrics = new MockStreamsMetrics(new Metrics());
+        cache = new NamedCache(taskIDString + "-" + underlyingStoreName, streamMetrics);
     }
 
     @Test
-    public void shouldKeepTrackOfMostRecentlyAndLeastRecentlyUsed() {
-        final List<KeyValue<String, String>> toInsert = Arrays.asList(
+    public void shouldKeepTrackOfMostRecentlyAndLeastRecentlyUsed() throws IOException {
+        List<KeyValue<String, String>> toInsert = Arrays.asList(
                 new KeyValue<>("K1", "V1"),
                 new KeyValue<>("K2", "V2"),
                 new KeyValue<>("K3", "V3"),
                 new KeyValue<>("K4", "V4"),
                 new KeyValue<>("K5", "V5"));
-        for (final KeyValue<String, String> stringStringKeyValue : toInsert) {
-            final byte[] key = stringStringKeyValue.key.getBytes();
-            final byte[] value = stringStringKeyValue.value.getBytes();
-            cache.put(Bytes.wrap(key),
-                new LRUCacheEntry(value, new RecordHeaders(), true, 1, 1, 1, ""));
-            final LRUCacheEntry head = cache.first();
-            final LRUCacheEntry tail = cache.last();
-            assertEquals(new String(head.value()), stringStringKeyValue.value);
-            assertEquals(new String(tail.value()), toInsert.get(0).value);
+        for (int i = 0; i < toInsert.size(); i++) {
+            byte[] key = toInsert.get(i).key.getBytes();
+            byte[] value = toInsert.get(i).value.getBytes();
+            cache.put(Bytes.wrap(key), new LRUCacheEntry(value, true, 1, 1, 1, ""));
+            LRUCacheEntry head = cache.first();
+            LRUCacheEntry tail = cache.last();
+            assertEquals(new String(head.value), toInsert.get(i).value);
+            assertEquals(new String(tail.value), toInsert.get(0).value);
             assertEquals(cache.flushes(), 0);
             assertEquals(cache.hits(), 0);
             assertEquals(cache.misses(), 0);
             assertEquals(cache.overwrites(), 0);
         }
+    }
+
+    private void testSpecificMetrics(final String groupName, final String entityName, final String opName,
+                                     final Map<String, String> metricTags) {
+        assertNotNull(streamMetrics.registry().metrics().get(streamMetrics.registry().metricName(opName + "-avg",
+                groupName, "The average cache hit ratio of " + entityName, metricTags)));
+        assertNotNull(streamMetrics.registry().metrics().get(streamMetrics.registry().metricName(opName + "-min",
+                groupName, "The minimum cache hit ratio of " + entityName, metricTags)));
+        assertNotNull(streamMetrics.registry().metrics().get(streamMetrics.registry().metricName(opName + "-max",
+                groupName, "The maximum cache hit ratio of " + entityName, metricTags)));
+    }
+    @Test
+    public void testMetrics() {
+        final String scope = "record-cache";
+        final String entityName = cache.name();
+        final String opName = "hitRatio";
+        final String tagKey = "record-cache-id";
+        final String tagValue = underlyingStoreName;
+        final String groupName = "stream-" + scope + "-metrics";
+        final Map<String, String> metricTags = new LinkedHashMap<>();
+        metricTags.put(tagKey, tagValue);
+        metricTags.put("task-id", taskIDString);
+
+        assertNotNull(streamMetrics.registry().getSensor(opName));
+        testSpecificMetrics(groupName, entityName, opName, metricTags);
+
+        // test "all"
+        metricTags.put(tagKey, "all");
+        testSpecificMetrics(groupName, entityName, opName, metricTags);
     }
 
     @Test
@@ -93,9 +119,9 @@ public class NamedCacheTest {
         cache.put(Bytes.wrap(new byte[]{1}), new LRUCacheEntry(new byte[]{11}));
         cache.put(Bytes.wrap(new byte[]{2}), new LRUCacheEntry(new byte[]{12}));
 
-        assertArrayEquals(new byte[] {10}, cache.get(Bytes.wrap(new byte[] {0})).value());
-        assertArrayEquals(new byte[] {11}, cache.get(Bytes.wrap(new byte[] {1})).value());
-        assertArrayEquals(new byte[] {12}, cache.get(Bytes.wrap(new byte[] {2})).value());
+        assertArrayEquals(new byte[] {10}, cache.get(Bytes.wrap(new byte[] {0})).value);
+        assertArrayEquals(new byte[] {11}, cache.get(Bytes.wrap(new byte[] {1})).value);
+        assertArrayEquals(new byte[] {12}, cache.get(Bytes.wrap(new byte[] {2})).value);
         assertEquals(cache.hits(), 3);
     }
 
@@ -105,15 +131,15 @@ public class NamedCacheTest {
         cache.putIfAbsent(Bytes.wrap(new byte[]{0}), new LRUCacheEntry(new byte[]{20}));
         cache.putIfAbsent(Bytes.wrap(new byte[]{1}), new LRUCacheEntry(new byte[]{30}));
 
-        assertArrayEquals(new byte[] {10}, cache.get(Bytes.wrap(new byte[] {0})).value());
-        assertArrayEquals(new byte[] {30}, cache.get(Bytes.wrap(new byte[] {1})).value());
+        assertArrayEquals(new byte[] {10}, cache.get(Bytes.wrap(new byte[] {0})).value);
+        assertArrayEquals(new byte[] {30}, cache.get(Bytes.wrap(new byte[] {1})).value);
     }
 
     @Test
     public void shouldDeleteAndUpdateSize() {
         cache.put(Bytes.wrap(new byte[]{0}), new LRUCacheEntry(new byte[]{10}));
         final LRUCacheEntry deleted = cache.delete(Bytes.wrap(new byte[]{0}));
-        assertArrayEquals(new byte[] {10}, deleted.value());
+        assertArrayEquals(new byte[] {10}, deleted.value);
         assertEquals(0, cache.sizeInBytes());
     }
 
@@ -123,9 +149,9 @@ public class NamedCacheTest {
                                    KeyValue.pair(new byte[] {1}, new LRUCacheEntry(new byte[]{1})),
                                    KeyValue.pair(new byte[] {2}, new LRUCacheEntry(new byte[]{2}))));
 
-        assertArrayEquals(new byte[]{0}, cache.get(Bytes.wrap(new byte[]{0})).value());
-        assertArrayEquals(new byte[]{1}, cache.get(Bytes.wrap(new byte[]{1})).value());
-        assertArrayEquals(new byte[]{2}, cache.get(Bytes.wrap(new byte[]{2})).value());
+        assertArrayEquals(new byte[]{0}, cache.get(Bytes.wrap(new byte[]{0})).value);
+        assertArrayEquals(new byte[]{1}, cache.get(Bytes.wrap(new byte[]{1})).value);
+        assertArrayEquals(new byte[]{2}, cache.get(Bytes.wrap(new byte[]{2})).value);
     }
 
     @Test
@@ -134,7 +160,7 @@ public class NamedCacheTest {
             KeyValue.pair(new byte[] {0}, new LRUCacheEntry(new byte[]{1})),
             KeyValue.pair(new byte[] {0}, new LRUCacheEntry(new byte[]{2}))));
 
-        assertArrayEquals(new byte[]{2}, cache.get(Bytes.wrap(new byte[]{0})).value());
+        assertArrayEquals(new byte[]{2}, cache.get(Bytes.wrap(new byte[]{0})).value);
         assertEquals(cache.overwrites(), 2);
     }
 
@@ -152,17 +178,21 @@ public class NamedCacheTest {
     @Test
     public void shouldFlushDirtEntriesOnEviction() {
         final List<ThreadCache.DirtyEntry> flushed = new ArrayList<>();
-        cache.put(Bytes.wrap(new byte[]{0}), new LRUCacheEntry(new byte[]{10}, headers, true, 0, 0, 0, ""));
+        cache.put(Bytes.wrap(new byte[]{0}), new LRUCacheEntry(new byte[]{10}, true, 0, 0, 0, ""));
         cache.put(Bytes.wrap(new byte[]{1}), new LRUCacheEntry(new byte[]{20}));
-        cache.put(Bytes.wrap(new byte[]{2}), new LRUCacheEntry(new byte[]{30}, headers, true, 0, 0, 0, ""));
+        cache.put(Bytes.wrap(new byte[]{2}), new LRUCacheEntry(new byte[]{30}, true, 0, 0, 0, ""));
 
-        cache.setListener(flushed::addAll);
+        cache.setListener(new ThreadCache.DirtyEntryFlushListener() {
+            @Override
+            public void apply(final List<ThreadCache.DirtyEntry> dirty) {
+                flushed.addAll(dirty);
+            }
+        });
 
         cache.evict();
 
         assertEquals(2, flushed.size());
         assertEquals(Bytes.wrap(new byte[] {0}), flushed.get(0).key());
-        assertEquals(headers, flushed.get(0).entry().context().headers());
         assertArrayEquals(new byte[] {10}, flushed.get(0).newValue());
         assertEquals(Bytes.wrap(new byte[] {2}), flushed.get(1).key());
         assertArrayEquals(new byte[] {30}, flushed.get(1).newValue());
@@ -170,22 +200,51 @@ public class NamedCacheTest {
     }
 
     @Test
+    public void shouldGetRangeIteratorOverKeys() {
+        cache.put(Bytes.wrap(new byte[]{0}), new LRUCacheEntry(new byte[]{10}, true, 0, 0, 0, ""));
+        cache.put(Bytes.wrap(new byte[]{1}), new LRUCacheEntry(new byte[]{20}));
+        cache.put(Bytes.wrap(new byte[]{2}), new LRUCacheEntry(new byte[]{30}, true, 0, 0, 0, ""));
+
+        final Iterator<Bytes> iterator = cache.keyRange(Bytes.wrap(new byte[]{1}), Bytes.wrap(new byte[]{2}));
+        assertEquals(Bytes.wrap(new byte[]{1}), iterator.next());
+        assertEquals(Bytes.wrap(new byte[]{2}), iterator.next());
+        assertFalse(iterator.hasNext());
+    }
+
+    @Test
+    public void shouldGetIteratorOverAllKeys() {
+        cache.put(Bytes.wrap(new byte[]{0}), new LRUCacheEntry(new byte[]{10}, true, 0, 0, 0, ""));
+        cache.put(Bytes.wrap(new byte[]{1}), new LRUCacheEntry(new byte[]{20}));
+        cache.put(Bytes.wrap(new byte[]{2}), new LRUCacheEntry(new byte[]{30}, true, 0, 0, 0, ""));
+
+        final Iterator<Bytes> iterator = cache.allKeys();
+        assertEquals(Bytes.wrap(new byte[]{0}), iterator.next());
+        assertEquals(Bytes.wrap(new byte[]{1}), iterator.next());
+        assertEquals(Bytes.wrap(new byte[]{2}), iterator.next());
+        assertFalse(iterator.hasNext());
+    }
+
+    @Test
     public void shouldNotThrowNullPointerWhenCacheIsEmptyAndEvictionCalled() {
         cache.evict();
     }
 
-    @Test
+    @Test(expected = IllegalStateException.class)
     public void shouldThrowIllegalStateExceptionWhenTryingToOverwriteDirtyEntryWithCleanEntry() {
-        cache.put(Bytes.wrap(new byte[]{0}), new LRUCacheEntry(new byte[]{10}, headers, true, 0, 0, 0, ""));
-        assertThrows(IllegalStateException.class, () -> cache.put(Bytes.wrap(new byte[]{0}),
-            new LRUCacheEntry(new byte[]{10}, new RecordHeaders(), false, 0, 0, 0, "")));
+        cache.put(Bytes.wrap(new byte[]{0}), new LRUCacheEntry(new byte[]{10}, true, 0, 0, 0, ""));
+        cache.put(Bytes.wrap(new byte[]{0}), new LRUCacheEntry(new byte[]{10}, false, 0, 0, 0, ""));
     }
 
     @Test
     public void shouldRemoveDeletedValuesOnFlush() {
-        cache.setListener(dirty -> { /* no-op */ });
-        cache.put(Bytes.wrap(new byte[]{0}), new LRUCacheEntry(null, headers, true, 0, 0, 0, ""));
-        cache.put(Bytes.wrap(new byte[]{1}), new LRUCacheEntry(new byte[]{20}, new RecordHeaders(), true, 0, 0, 0, ""));
+        cache.setListener(new ThreadCache.DirtyEntryFlushListener() {
+            @Override
+            public void apply(final List<ThreadCache.DirtyEntry> dirty) {
+                // no-op
+            }
+        });
+        cache.put(Bytes.wrap(new byte[]{0}), new LRUCacheEntry(null, true, 0, 0, 0, ""));
+        cache.put(Bytes.wrap(new byte[]{1}), new LRUCacheEntry(new byte[]{20}, true, 0, 0, 0, ""));
         cache.flush();
         assertEquals(1, cache.size());
         assertNotNull(cache.get(Bytes.wrap(new byte[]{1})));
@@ -193,18 +252,21 @@ public class NamedCacheTest {
 
     @Test
     public void shouldBeReentrantAndNotBreakLRU() {
-        final LRUCacheEntry dirty = new LRUCacheEntry(new byte[]{3}, new RecordHeaders(), true, 0, 0, 0, "");
+        final LRUCacheEntry dirty = new LRUCacheEntry(new byte[]{3}, true, 0, 0, 0, "");
         final LRUCacheEntry clean = new LRUCacheEntry(new byte[]{3});
         cache.put(Bytes.wrap(new byte[]{0}), dirty);
         cache.put(Bytes.wrap(new byte[]{1}), clean);
         cache.put(Bytes.wrap(new byte[]{2}), clean);
         assertEquals(3 * cache.head().size(), cache.sizeInBytes());
-        cache.setListener(dirty1 -> {
-            cache.put(Bytes.wrap(new byte[]{3}), clean);
-            // evict key 1
-            cache.evict();
-            // evict key 2
-            cache.evict();
+        cache.setListener(new ThreadCache.DirtyEntryFlushListener() {
+            @Override
+            public void apply(final List<ThreadCache.DirtyEntry> dirty) {
+                cache.put(Bytes.wrap(new byte[]{3}), clean);
+                // evict key 1
+                cache.evict();
+                // evict key 2
+                cache.evict();
+            }
         });
 
         assertEquals(3 * cache.head().size(), cache.sizeInBytes());
@@ -236,10 +298,15 @@ public class NamedCacheTest {
 
     @Test
     public void shouldNotThrowIllegalArgumentAfterEvictingDirtyRecordAndThenPuttingNewRecordWithSameKey() {
-        final LRUCacheEntry dirty = new LRUCacheEntry(new byte[]{3}, new RecordHeaders(), true, 0, 0, 0, "");
+        final LRUCacheEntry dirty = new LRUCacheEntry(new byte[]{3}, true, 0, 0, 0, "");
         final LRUCacheEntry clean = new LRUCacheEntry(new byte[]{3});
         final Bytes key = Bytes.wrap(new byte[] {3});
-        cache.setListener(dirty1 -> cache.put(key, clean));
+        cache.setListener(new ThreadCache.DirtyEntryFlushListener() {
+            @Override
+            public void apply(final List<ThreadCache.DirtyEntry> dirty) {
+                cache.put(key, clean);
+            }
+        });
         cache.put(key, dirty);
         cache.evict();
     }

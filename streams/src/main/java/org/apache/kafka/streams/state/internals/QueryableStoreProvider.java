@@ -16,27 +16,25 @@
  */
 package org.apache.kafka.streams.state.internals;
 
-import org.apache.kafka.streams.StoreQueryParameters;
+import org.apache.kafka.streams.errors.InvalidStateStoreException;
 import org.apache.kafka.streams.processor.StateStore;
 import org.apache.kafka.streams.state.QueryableStoreType;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * A wrapper over all of the {@link StateStoreProvider}s in a Topology
- *
- * The store providers field is a reference
  */
 public class QueryableStoreProvider {
 
-    // map of StreamThread.name to StreamThreadStateStoreProvider
-    private final Map<String, StreamThreadStateStoreProvider> storeProviders;
+    private final List<StateStoreProvider> storeProviders;
     private final GlobalStateStoreProvider globalStoreProvider;
 
-    public QueryableStoreProvider(final GlobalStateStoreProvider globalStateStoreProvider) {
-        this.storeProviders = new ConcurrentHashMap<>();
+    public QueryableStoreProvider(final List<StateStoreProvider> storeProviders,
+                                  final GlobalStateStoreProvider globalStateStoreProvider) {
+        this.storeProviders = new ArrayList<>(storeProviders);
         this.globalStoreProvider = globalStateStoreProvider;
     }
 
@@ -44,31 +42,25 @@ public class QueryableStoreProvider {
      * Get a composite object wrapping the instances of the {@link StateStore} with the provided
      * storeName and {@link QueryableStoreType}
      *
-     * @param storeQueryParameters       if stateStoresEnabled is used i.e. staleStoresEnabled is true, include standbys and recovering stores;
-     *                                        if stateStoresDisabled i.e. staleStoresEnabled is false, only include running actives;
-     *                                        if partition is null then it fetches all local partitions on the instance;
-     *                                        if partition is set then it fetches a specific partition.
+     * @param storeName          name of the store
+     * @param queryableStoreType accept stores passing {@link QueryableStoreType#accepts(StateStore)}
      * @param <T>                The expected type of the returned store
      * @return A composite object that wraps the store instances.
      */
-    public <T> T store(final StoreQueryParameters<T> storeQueryParameters) {
-        final String storeName = storeQueryParameters.storeName();
-        final QueryableStoreType<T> queryableStoreType = storeQueryParameters.queryableStoreType();
+    public <T> T getStore(final String storeName, final QueryableStoreType<T> queryableStoreType) {
         final List<T> globalStore = globalStoreProvider.stores(storeName, queryableStoreType);
         if (!globalStore.isEmpty()) {
-            return queryableStoreType.create(globalStoreProvider, storeName);
+            return queryableStoreType.create(new WrappingStoreProvider(Collections.<StateStoreProvider>singletonList(globalStoreProvider)), storeName);
+        }
+        final List<T> allStores = new ArrayList<>();
+        for (StateStoreProvider storeProvider : storeProviders) {
+            allStores.addAll(storeProvider.stores(storeName, queryableStoreType));
+        }
+        if (allStores.isEmpty()) {
+            throw new InvalidStateStoreException("the state store, " + storeName + ", may have migrated to another instance.");
         }
         return queryableStoreType.create(
-            new WrappingStoreProvider(storeProviders.values(), storeQueryParameters),
-            storeName
-        );
-    }
-
-    public void addStoreProviderForThread(final String threadName, final StreamThreadStateStoreProvider streamThreadStateStoreProvider) {
-        this.storeProviders.put(threadName, streamThreadStateStoreProvider);
-    }
-
-    public void removeStoreProviderForThread(final String threadName) {
-        this.storeProviders.remove(threadName);
+                new WrappingStoreProvider(storeProviders),
+                storeName);
     }
 }

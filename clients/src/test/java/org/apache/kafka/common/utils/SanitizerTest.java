@@ -16,8 +16,11 @@
  */
 package org.apache.kafka.common.utils;
 
-import org.junit.jupiter.api.Test;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
+import java.io.UnsupportedEncodingException;
 import java.lang.management.ManagementFactory;
 
 import javax.management.MBeanException;
@@ -26,14 +29,12 @@ import javax.management.MalformedObjectNameException;
 import javax.management.ObjectName;
 import javax.management.OperationsException;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import org.junit.Test;
 
 public class SanitizerTest {
 
     @Test
-    public void testSanitize() {
+    public void testSanitize() throws UnsupportedEncodingException {
         String principal = "CN=Some characters !@#$%&*()_-+=';:,/~";
         String sanitizedPrincipal = Sanitizer.sanitize(principal);
         assertTrue(sanitizedPrincipal.replace('%', '_').matches("[a-zA-Z0-9\\._\\-]+"));
@@ -74,7 +75,7 @@ public class SanitizerTest {
         int getValue();
     }
 
-    public static class TestStat implements TestStatMBean {
+    public class TestStat implements TestStatMBean {
         public int getValue() {
             return 1;
         }

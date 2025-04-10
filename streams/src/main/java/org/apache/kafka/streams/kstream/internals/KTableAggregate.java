@@ -16,136 +16,117 @@
  */
 package org.apache.kafka.streams.kstream.internals;
 
-import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.streams.errors.StreamsException;
 import org.apache.kafka.streams.kstream.Aggregator;
 import org.apache.kafka.streams.kstream.Initializer;
-import org.apache.kafka.streams.processor.api.Processor;
-import org.apache.kafka.streams.processor.api.ProcessorContext;
-import org.apache.kafka.streams.processor.api.Record;
-import org.apache.kafka.streams.processor.internals.StoreFactory;
-import org.apache.kafka.streams.processor.internals.StoreFactory.FactoryWrappingStoreBuilder;
+import org.apache.kafka.streams.processor.AbstractProcessor;
+import org.apache.kafka.streams.processor.Processor;
+import org.apache.kafka.streams.processor.ProcessorContext;
 import org.apache.kafka.streams.state.KeyValueStore;
-import org.apache.kafka.streams.state.StoreBuilder;
-import org.apache.kafka.streams.state.ValueAndTimestamp;
-import org.apache.kafka.streams.state.internals.KeyValueStoreWrapper;
 
-import java.util.Collections;
-import java.util.Set;
-
-import static org.apache.kafka.streams.state.ValueAndTimestamp.getValueOrNull;
-import static org.apache.kafka.streams.state.VersionedKeyValueStore.PUT_RETURN_CODE_NOT_PUT;
-import static org.apache.kafka.streams.state.internals.KeyValueStoreWrapper.PUT_RETURN_CODE_IS_LATEST;
-
-public class KTableAggregate<KIn, VIn, VAgg> implements
-    KTableProcessorSupplier<KIn, VIn, KIn, VAgg> {
+public class KTableAggregate<K, V, T> implements KTableProcessorSupplier<K, V, T> {
 
     private final String storeName;
-    private final StoreFactory storeFactory;
-    private final Initializer<VAgg> initializer;
-    private final Aggregator<? super KIn, ? super VIn, VAgg> add;
-    private final Aggregator<? super KIn, ? super VIn, VAgg> remove;
+    private final Initializer<T> initializer;
+    private final Aggregator<? super K, ? super V, T> add;
+    private final Aggregator<? super K, ? super V, T> remove;
 
     private boolean sendOldValues = false;
 
-    KTableAggregate(final MaterializedInternal<KIn, VAgg, KeyValueStore<Bytes, byte[]>> materialized,
-                    final Initializer<VAgg> initializer,
-                    final Aggregator<? super KIn, ? super VIn, VAgg> add,
-                    final Aggregator<? super KIn, ? super VIn, VAgg> remove) {
-        this.storeFactory = new KeyValueStoreMaterializer<>(materialized);
-        this.storeName = materialized.storeName();
+    public KTableAggregate(String storeName, Initializer<T> initializer, Aggregator<? super K, ? super V, T> add, Aggregator<? super K, ? super V, T> remove) {
+        this.storeName = storeName;
         this.initializer = initializer;
         this.add = add;
         this.remove = remove;
     }
 
     @Override
-    public boolean enableSendingOldValues(final boolean forceMaterialization) {
-        // Aggregates are always materialized:
+    public void enableSendingOldValues() {
         sendOldValues = true;
-        return true;
     }
 
     @Override
-    public Set<StoreBuilder<?>> stores() {
-        return Collections.singleton(new FactoryWrappingStoreBuilder<>(storeFactory));
-    }
-
-    @Override
-    public Processor<KIn, Change<VIn>, KIn, Change<VAgg>> get() {
+    public Processor<K, Change<V>> get() {
         return new KTableAggregateProcessor();
     }
 
-    private class KTableAggregateProcessor implements Processor<KIn, Change<VIn>, KIn, Change<VAgg>> {
-        private KeyValueStoreWrapper<KIn, VAgg> store;
-        private TimestampedTupleForwarder<KIn, VAgg> tupleForwarder;
+    private class KTableAggregateProcessor extends AbstractProcessor<K, Change<V>> {
+
+        private KeyValueStore<K, T> store;
+        private TupleForwarder<K, T> tupleForwarder;
 
         @SuppressWarnings("unchecked")
         @Override
-        public void init(final ProcessorContext<KIn, Change<VAgg>> context) {
-            store = new KeyValueStoreWrapper<>(context, storeName);
-            tupleForwarder = new TimestampedTupleForwarder<>(
-                store.store(),
-                context,
-                new TimestampedCacheFlushListener<>(context),
-                sendOldValues);
+        public void init(final ProcessorContext context) {
+            super.init(context);
+            store = (KeyValueStore<K, T>) context.getStateStore(storeName);
+            tupleForwarder = new TupleForwarder<>(store, context, new ForwardingCacheFlushListener<K, V>(context, sendOldValues), sendOldValues);
         }
 
         /**
          * @throws StreamsException if key is null
          */
         @Override
-        public void process(final Record<KIn, Change<VIn>> record) {
+        public void process(K key, Change<V> value) {
             // the keys should never be null
-            if (record.key() == null) {
+            if (key == null)
                 throw new StreamsException("Record key for KTable aggregate operator with state " + storeName + " should not be null.");
-            }
 
-            final ValueAndTimestamp<VAgg> oldAggAndTimestamp = store.get(record.key());
-            final VAgg oldAgg = getValueOrNull(oldAggAndTimestamp);
-            final VAgg intermediateAgg;
-            long newTimestamp = record.timestamp();
+            T oldAgg = store.get(key);
+
+            if (oldAgg == null)
+                oldAgg = initializer.apply();
+
+            T newAgg = oldAgg;
 
             // first try to remove the old value
-            if (record.value().oldValue != null && oldAgg != null) {
-                intermediateAgg = remove.apply(record.key(), record.value().oldValue, oldAgg);
-                newTimestamp = Math.max(record.timestamp(), oldAggAndTimestamp.timestamp());
-            } else {
-                intermediateAgg = oldAgg;
+            if (value.oldValue != null) {
+                newAgg = remove.apply(key, value.oldValue, newAgg);
             }
 
-            // then try to add the new value
-            final VAgg newAgg;
-            if (record.value().newValue != null) {
-                final VAgg initializedAgg;
-                if (intermediateAgg == null) {
-                    initializedAgg = initializer.apply();
-                } else {
-                    initializedAgg = intermediateAgg;
-                }
-
-                newAgg = add.apply(record.key(), record.value().newValue, initializedAgg);
-                if (oldAggAndTimestamp != null) {
-                    newTimestamp = Math.max(record.timestamp(), oldAggAndTimestamp.timestamp());
-                }
-            } else {
-                newAgg = intermediateAgg;
+            // then try to add the new new value
+            if (value.newValue != null) {
+                newAgg = add.apply(key, value.newValue, newAgg);
             }
 
             // update the store with the new value
-            final long putReturnCode = store.put(record.key(), newAgg, newTimestamp);
-            // if not put to store, do not forward downstream either
-            if (putReturnCode != PUT_RETURN_CODE_NOT_PUT) {
-                tupleForwarder.maybeForward(
-                    record.withValue(new Change<>(newAgg, sendOldValues ? oldAgg : null, putReturnCode == PUT_RETURN_CODE_IS_LATEST))
-                        .withTimestamp(newTimestamp));
-            }
+            store.put(key, newAgg);
+            tupleForwarder.maybeForward(key, newAgg, oldAgg);
         }
 
     }
 
     @Override
-    public KTableValueGetterSupplier<KIn, VAgg> view() {
-        return new KTableMaterializedValueGetterSupplier<>(storeName);
+    public KTableValueGetterSupplier<K, T> view() {
+
+        return new KTableValueGetterSupplier<K, T>() {
+
+            public KTableValueGetter<K, T> get() {
+                return new KTableAggregateValueGetter();
+            }
+
+            @Override
+            public String[] storeNames() {
+                return new String[]{storeName};
+            }
+        };
     }
+
+    private class KTableAggregateValueGetter implements KTableValueGetter<K, T> {
+
+        private KeyValueStore<K, T> store;
+
+        @SuppressWarnings("unchecked")
+        @Override
+        public void init(ProcessorContext context) {
+            store = (KeyValueStore<K, T>) context.getStateStore(storeName);
+        }
+
+        @Override
+        public T get(K key) {
+            return store.get(key);
+        }
+
+    }
+
 }

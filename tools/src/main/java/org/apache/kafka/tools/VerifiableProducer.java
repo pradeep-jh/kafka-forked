@@ -16,33 +16,32 @@
  */
 package org.apache.kafka.tools;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import org.apache.kafka.clients.producer.Callback;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
-import org.apache.kafka.common.serialization.StringSerializer;
-import org.apache.kafka.server.util.ThroughputThrottler;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
-import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.Properties;
+
+import static net.sourceforge.argparse4j.impl.Arguments.store;
 
 import net.sourceforge.argparse4j.ArgumentParsers;
 import net.sourceforge.argparse4j.inf.ArgumentParser;
 import net.sourceforge.argparse4j.inf.ArgumentParserException;
-import net.sourceforge.argparse4j.inf.MutuallyExclusiveGroup;
 import net.sourceforge.argparse4j.inf.Namespace;
-
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Paths;
-import java.util.Properties;
-
-import static net.sourceforge.argparse4j.impl.Arguments.store;
+import org.apache.kafka.common.serialization.StringSerializer;
+import org.apache.kafka.common.utils.Exit;
 
 /**
  * Primarily intended for use with system testing, this producer prints metadata
@@ -57,7 +56,7 @@ import static net.sourceforge.argparse4j.impl.Arguments.store;
  * If logging is left enabled, log output on stdout can be easily ignored by checking
  * whether a given line is valid JSON.
  */
-public class VerifiableProducer implements AutoCloseable {
+public class VerifiableProducer {
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final String topic;
@@ -81,20 +80,13 @@ public class VerifiableProducer implements AutoCloseable {
     // if null, then values are produced without a prefix
     private final Integer valuePrefix;
 
-    // Send messages with a key of 0 incrementing by 1 for
-    // each message produced when number specified is reached
-    // key is reset to 0
-    private final Integer repeatingKeys;
-
-    private int keyCounter;
-
     // The create time to set in messages, in milliseconds since epoch
     private Long createTime;
 
     private final Long startTime;
 
     public VerifiableProducer(KafkaProducer<String, String> producer, String topic, int throughput, int maxMessages,
-                              Integer valuePrefix, Long createTime, Integer repeatingKeys) {
+                              Integer valuePrefix, Long createTime) {
 
         this.topic = topic;
         this.throughput = throughput;
@@ -103,7 +95,6 @@ public class VerifiableProducer implements AutoCloseable {
         this.valuePrefix = valuePrefix;
         this.createTime = createTime;
         this.startTime = System.currentTimeMillis();
-        this.repeatingKeys = repeatingKeys;
 
     }
 
@@ -120,16 +111,14 @@ public class VerifiableProducer implements AutoCloseable {
                 .type(String.class)
                 .metavar("TOPIC")
                 .help("Produce messages to this topic.");
-        MutuallyExclusiveGroup connectionGroup = parser.addMutuallyExclusiveGroup("Connection Group")
-                .description("Group of arguments for connection to brokers")
-                .required(true);
-        connectionGroup.addArgument("--bootstrap-server")
+
+        parser.addArgument("--broker-list")
                 .action(store())
-                .required(false)
+                .required(true)
                 .type(String.class)
                 .metavar("HOST1:PORT1[,HOST2:PORT2[...]]")
-                .dest("bootstrapServer")
-                .help("REQUIRED: The server(s) to connect to. Comma-separated list of Kafka brokers in the form HOST1:PORT1,HOST2:PORT2,...");
+                .dest("brokerList")
+                .help("Comma-separated list of Kafka brokers in the form HOST1:PORT1,HOST2:PORT2,...");
 
         parser.addArgument("--max-messages")
                 .action(store())
@@ -167,8 +156,8 @@ public class VerifiableProducer implements AutoCloseable {
         parser.addArgument("--message-create-time")
                 .action(store())
                 .required(false)
-                .setDefault(-1L)
-                .type(Long.class)
+                .setDefault(-1)
+                .type(Integer.class)
                 .metavar("CREATETIME")
                 .dest("createTime")
                 .help("Send messages with creation time starting at the arguments value, in milliseconds since epoch");
@@ -180,14 +169,6 @@ public class VerifiableProducer implements AutoCloseable {
             .metavar("VALUE-PREFIX")
             .dest("valuePrefix")
             .help("If specified, each produced value will have this prefix with a dot separator");
-
-        parser.addArgument("--repeating-keys")
-            .action(store())
-            .required(false)
-            .type(Integer.class)
-            .metavar("REPEATING-KEYS")
-            .dest("repeatingKeys")
-            .help("If specified, each produced record will have a key starting at 0 increment by 1 up to the number specified (exclusive), then the key is set to 0 again");
 
         return parser;
     }
@@ -201,9 +182,9 @@ public class VerifiableProducer implements AutoCloseable {
      * we use VerifiableProducer from the development tools package, and run it against 0.8.X.X kafka jars.
      * Since this method is not in Utils in the 0.8.X.X jars, we have to cheat a bit and duplicate.
      */
-    public static Properties loadProps(String filename) throws IOException {
+    public static Properties loadProps(String filename) throws IOException, FileNotFoundException {
         Properties props = new Properties();
-        try (InputStream propStream = Files.newInputStream(Paths.get(filename))) {
+        try (InputStream propStream = new FileInputStream(filename)) {
             props.load(propStream);
         }
         return props;
@@ -218,21 +199,13 @@ public class VerifiableProducer implements AutoCloseable {
         int throughput = res.getInt("throughput");
         String configFile = res.getString("producer.config");
         Integer valuePrefix = res.getInt("valuePrefix");
-        Long createTime = res.getLong("createTime");
-        Integer repeatingKeys = res.getInt("repeatingKeys");
+        Long createTime = (long) res.getInt("createTime");
 
         if (createTime == -1L)
             createTime = null;
 
         Properties producerProps = new Properties();
-
-        if (res.get("bootstrapServer") == null) {
-            parser.printHelp();
-            // Can't use `Exit.exit` here because it didn't exist until 0.11.0.0.
-            System.exit(0);
-        }
-        producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, res.getString("bootstrapServer"));
-
+        producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, res.getString("brokerList"));
         producerProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
                 "org.apache.kafka.common.serialization.StringSerializer");
         producerProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,
@@ -251,7 +224,7 @@ public class VerifiableProducer implements AutoCloseable {
         StringSerializer serializer = new StringSerializer();
         KafkaProducer<String, String> producer = new KafkaProducer<>(producerProps, serializer, serializer);
 
-        return new VerifiableProducer(producer, topic, throughput, maxMessages, valuePrefix, createTime, repeatingKeys);
+        return new VerifiableProducer(producer, topic, throughput, maxMessages, valuePrefix, createTime);
     }
 
     /** Produce a message with given key and value. */
@@ -279,23 +252,12 @@ public class VerifiableProducer implements AutoCloseable {
         }
     }
 
-    /** Returns a string to publish: ether 'valuePrefix'.'val' or 'val' */
+    /** Returns a string to publish: ether 'valuePrefix'.'val' or 'val' **/
     public String getValue(long val) {
         if (this.valuePrefix != null) {
             return String.format("%d.%d", this.valuePrefix, val);
         }
         return String.format("%d", val);
-    }
-
-    public String getKey() {
-        String key = null;
-        if (repeatingKeys != null) {
-            key = Integer.toString(keyCounter++);
-            if (keyCounter == repeatingKeys) {
-                keyCounter = 0;
-            }
-        }
-        return key;
     }
 
     /** Close the producer to flush any remaining messages. */
@@ -305,7 +267,7 @@ public class VerifiableProducer implements AutoCloseable {
     }
 
     @JsonPropertyOrder({ "timestamp", "name" })
-    private abstract static class ProducerEvent {
+    private static abstract class ProducerEvent {
         private final long timestamp = System.currentTimeMillis();
 
         @JsonProperty
@@ -335,9 +297,9 @@ public class VerifiableProducer implements AutoCloseable {
 
     private static class SuccessfulSend extends ProducerEvent {
 
-        private final String key;
-        private final String value;
-        private final RecordMetadata recordMetadata;
+        private String key;
+        private String value;
+        private RecordMetadata recordMetadata;
 
         public SuccessfulSend(String key, String value, RecordMetadata recordMetadata) {
             assert recordMetadata != null : "Expected non-null recordMetadata object.";
@@ -379,10 +341,10 @@ public class VerifiableProducer implements AutoCloseable {
 
     private static class FailedSend extends ProducerEvent {
 
-        private final String topic;
-        private final String key;
-        private final String value;
-        private final Exception exception;
+        private String topic;
+        private String key;
+        private String value;
+        private Exception exception;
 
         public FailedSend(String key, String value, String topic, Exception exception) {
             assert exception != null : "Expected non-null exception.";
@@ -425,10 +387,10 @@ public class VerifiableProducer implements AutoCloseable {
 
     private static class ToolData extends ProducerEvent {
 
-        private final long sent;
-        private final long acked;
-        private final long targetThroughput;
-        private final double avgThroughput;
+        private long sent;
+        private long acked;
+        private long targetThroughput;
+        private double avgThroughput;
 
         public ToolData(long sent, long acked, long targetThroughput, double avgThroughput) {
             this.sent = sent;
@@ -474,8 +436,8 @@ public class VerifiableProducer implements AutoCloseable {
     /** Callback which prints errors to stdout when the producer fails to send. */
     private class PrintInfoCallback implements Callback {
 
-        private final String key;
-        private final String value;
+        private String key;
+        private String value;
 
         PrintInfoCallback(String key, String value) {
             this.key = key;
@@ -506,7 +468,7 @@ public class VerifiableProducer implements AutoCloseable {
             }
             long sendStartMs = System.currentTimeMillis();
 
-            this.send(this.getKey(), this.getValue(i));
+            this.send(null, this.getValue(i));
 
             if (throttler.shouldThrottle(i, sendStartMs)) {
                 throttler.throttle();
@@ -518,8 +480,7 @@ public class VerifiableProducer implements AutoCloseable {
         ArgumentParser parser = argParser();
         if (args.length == 0) {
             parser.printHelp();
-            // Can't use `Exit.exit` here because it didn't exist until 0.11.0.0.
-            System.exit(0);
+            Exit.exit(0);
         }
 
         try {
@@ -528,26 +489,27 @@ public class VerifiableProducer implements AutoCloseable {
             final long startMs = System.currentTimeMillis();
             ThroughputThrottler throttler = new ThroughputThrottler(producer.throughput, startMs);
 
-            // Can't use `Exit.addShutdownHook` here because it didn't exist until 2.5.0.
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                // Trigger main thread to stop producing messages
-                producer.stopProducing = true;
+            Runtime.getRuntime().addShutdownHook(new Thread() {
+                @Override
+                public void run() {
+                    // Trigger main thread to stop producing messages
+                    producer.stopProducing = true;
 
-                // Flush any remaining messages
-                producer.close();
+                    // Flush any remaining messages
+                    producer.close();
 
-                // Print a summary
-                long stopMs = System.currentTimeMillis();
-                double avgThroughput = 1000 * ((producer.numAcked) / (double) (stopMs - startMs));
+                    // Print a summary
+                    long stopMs = System.currentTimeMillis();
+                    double avgThroughput = 1000 * ((producer.numAcked) / (double) (stopMs - startMs));
 
-                producer.printJson(new ToolData(producer.numSent, producer.numAcked, producer.throughput, avgThroughput));
-            }, "verifiable-producer-shutdown-hook"));
+                    producer.printJson(new ToolData(producer.numSent, producer.numAcked, producer.throughput, avgThroughput));
+                }
+            });
 
             producer.run(throttler);
         } catch (ArgumentParserException e) {
             parser.handleError(e);
-            // Can't use `Exit.exit` here because it didn't exist until 0.11.0.0.
-            System.exit(1);
+            Exit.exit(1);
         }
     }
 

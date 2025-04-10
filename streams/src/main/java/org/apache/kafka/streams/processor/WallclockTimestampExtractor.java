@@ -17,6 +17,7 @@
 package org.apache.kafka.streams.processor;
 
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.common.annotation.InterfaceStability;
 
 /**
  * Retrieves current wall clock timestamps as {@link System#currentTimeMillis()}.
@@ -28,19 +29,20 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
  *
  * @see FailOnInvalidTimestamp
  * @see LogAndSkipOnInvalidTimestamp
- * @see UsePartitionTimeOnInvalidTimestamp
+ * @see UsePreviousTimeOnInvalidTimestamp
  */
+@InterfaceStability.Evolving
 public class WallclockTimestampExtractor implements TimestampExtractor {
 
     /**
      * Return the current wall clock time as timestamp.
      *
      * @param record a data record
-     * @param partitionTime the highest extracted valid timestamp of the current record's partition˙ (could be -1 if unknown)
+     * @param previousTimestamp the latest extracted valid timestamp of the current record's partition˙ (could be -1 if unknown)
      * @return the current wall clock time, expressed in milliseconds since midnight, January 1, 1970 UTC
      */
     @Override
-    public long extract(final ConsumerRecord<Object, Object> record, final long partitionTime) {
+    public long extract(final ConsumerRecord<Object, Object> record, final long previousTimestamp) {
         return System.currentTimeMillis();
     }
 }

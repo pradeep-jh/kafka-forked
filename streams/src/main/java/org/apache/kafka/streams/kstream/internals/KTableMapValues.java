@@ -16,188 +16,111 @@
  */
 package org.apache.kafka.streams.kstream.internals;
 
-import org.apache.kafka.streams.kstream.ValueMapperWithKey;
-import org.apache.kafka.streams.processor.api.Processor;
-import org.apache.kafka.streams.processor.api.ProcessorContext;
-import org.apache.kafka.streams.processor.api.Record;
-import org.apache.kafka.streams.processor.internals.StoreFactory;
-import org.apache.kafka.streams.state.StoreBuilder;
-import org.apache.kafka.streams.state.ValueAndTimestamp;
-import org.apache.kafka.streams.state.internals.KeyValueStoreWrapper;
-
-import java.util.Collections;
-import java.util.Set;
-
-import static org.apache.kafka.streams.state.ValueAndTimestamp.getValueOrNull;
-import static org.apache.kafka.streams.state.VersionedKeyValueStore.PUT_RETURN_CODE_NOT_PUT;
-import static org.apache.kafka.streams.state.internals.KeyValueStoreWrapper.PUT_RETURN_CODE_IS_LATEST;
+import org.apache.kafka.streams.kstream.ValueMapper;
+import org.apache.kafka.streams.processor.AbstractProcessor;
+import org.apache.kafka.streams.processor.Processor;
+import org.apache.kafka.streams.processor.ProcessorContext;
+import org.apache.kafka.streams.state.KeyValueStore;
 
 
-class KTableMapValues<KIn, VIn, VOut> implements KTableProcessorSupplier<KIn, VIn, KIn, VOut> {
-    private final KTableImpl<KIn, ?, VIn> parent;
-    private final ValueMapperWithKey<? super KIn, ? super VIn, ? extends VOut> mapper;
+class KTableMapValues<K, V, V1> implements KTableProcessorSupplier<K, V, V1> {
+
+    private final KTableImpl<K, ?, V> parent;
+    private final ValueMapper<? super V, ? extends V1> mapper;
     private final String queryableName;
     private boolean sendOldValues = false;
-    private final StoreFactory storeFactory;
 
-    KTableMapValues(final KTableImpl<KIn, ?, VIn> parent,
-                    final ValueMapperWithKey<? super KIn, ? super VIn, ? extends VOut> mapper,
-                    final String queryableName,
-                    final StoreFactory storeFactory) {
+    public KTableMapValues(final KTableImpl<K, ?, V> parent, final ValueMapper<? super V, ? extends V1> mapper,
+                           final String queryableName) {
         this.parent = parent;
         this.mapper = mapper;
         this.queryableName = queryableName;
-        this.storeFactory = storeFactory;
     }
 
     @Override
-    public Processor<KIn, Change<VIn>, KIn, Change<VOut>> get() {
+    public Processor<K, Change<V>> get() {
         return new KTableMapValuesProcessor();
     }
 
     @Override
-    public Set<StoreBuilder<?>> stores() {
-        if (storeFactory == null) {
-            return null;
-        }
-        return Collections.singleton(new StoreFactory.FactoryWrappingStoreBuilder<>(storeFactory));
+    public KTableValueGetterSupplier<K, V1> view() {
+        final KTableValueGetterSupplier<K, V> parentValueGetterSupplier = parent.valueGetterSupplier();
+
+        return new KTableValueGetterSupplier<K, V1>() {
+
+            public KTableValueGetter<K, V1> get() {
+                return new KTableMapValuesValueGetter(parentValueGetterSupplier.get());
+            }
+
+            @Override
+            public String[] storeNames() {
+                return parentValueGetterSupplier.storeNames();
+            }
+        };
     }
 
     @Override
-    public KTableValueGetterSupplier<KIn, VOut> view() {
-        // if the KTable is materialized, use the materialized store to return getter value;
-        // otherwise rely on the parent getter and apply map-values on-the-fly
-        if (queryableName != null) {
-            return new KTableMaterializedValueGetterSupplier<>(queryableName);
-        } else {
-            return new KTableValueGetterSupplier<KIn, VOut>() {
-                final KTableValueGetterSupplier<KIn, VIn> parentValueGetterSupplier = parent.valueGetterSupplier();
-
-                public KTableValueGetter<KIn, VOut> get() {
-                    return new KTableMapValuesValueGetter(parentValueGetterSupplier.get());
-                }
-
-                @Override
-                public String[] storeNames() {
-                    return parentValueGetterSupplier.storeNames();
-                }
-            };
-        }
+    public void enableSendingOldValues() {
+        parent.enableSendingOldValues();
+        sendOldValues = true;
     }
 
-    @Override
-    public boolean enableSendingOldValues(final boolean forceMaterialization) {
-        if (queryableName != null) {
-            sendOldValues = true;
-            return true;
-        }
+    private V1 computeValue(V value) {
+        V1 newValue = null;
 
-        if (parent.enableSendingOldValues(forceMaterialization)) {
-            sendOldValues = true;
-        }
-
-        return sendOldValues;
-    }
-
-    private VOut computeValue(final KIn key, final VIn value) {
-        VOut newValue = null;
-
-        if (value != null) {
-            newValue = mapper.apply(key, value);
-        }
+        if (value != null)
+            newValue = mapper.apply(value);
 
         return newValue;
     }
 
-    private ValueAndTimestamp<VOut> computeValueAndTimestamp(final KIn key, final ValueAndTimestamp<VIn> valueAndTimestamp) {
-        VOut newValue = null;
-        long timestamp = 0;
+    private class KTableMapValuesProcessor extends AbstractProcessor<K, Change<V>> {
 
-        if (valueAndTimestamp != null) {
-            newValue = mapper.apply(key, valueAndTimestamp.value());
-            timestamp = valueAndTimestamp.timestamp();
-        }
+        private KeyValueStore<K, V1> store;
+        private TupleForwarder<K, V1> tupleForwarder;
 
-        return ValueAndTimestamp.make(newValue, timestamp);
-    }
-
-
-    private class KTableMapValuesProcessor implements Processor<KIn, Change<VIn>, KIn, Change<VOut>> {
-        private ProcessorContext<KIn, Change<VOut>> context;
-        private KeyValueStoreWrapper<KIn, VOut> store;
-        private TimestampedTupleForwarder<KIn, VOut> tupleForwarder;
-
+        @SuppressWarnings("unchecked")
         @Override
-        public void init(final ProcessorContext<KIn, Change<VOut>> context) {
-            this.context = context;
+        public void init(ProcessorContext context) {
+            super.init(context);
             if (queryableName != null) {
-                store = new KeyValueStoreWrapper<>(context, queryableName);
-                tupleForwarder = new TimestampedTupleForwarder<>(
-                    store.store(),
-                    context,
-                    new TimestampedCacheFlushListener<>(context),
-                    sendOldValues);
+                store = (KeyValueStore<K, V1>) context.getStateStore(queryableName);
+                tupleForwarder = new TupleForwarder<>(store, context, new ForwardingCacheFlushListener<K, V1>(context, sendOldValues), sendOldValues);
             }
         }
 
         @Override
-        public void process(final Record<KIn, Change<VIn>> record) {
-            final VOut newValue = computeValue(record.key(), record.value().newValue);
-            final VOut oldValue = computeOldValue(record.key(), record.value());
+        public void process(K key, Change<V> change) {
+            V1 newValue = computeValue(change.newValue);
+            V1 oldValue = sendOldValues ? computeValue(change.oldValue) : null;
 
             if (queryableName != null) {
-                final long putReturnCode = store.put(record.key(), newValue, record.timestamp());
-                // if not put to store, do not forward downstream either
-                if (putReturnCode != PUT_RETURN_CODE_NOT_PUT) {
-                    tupleForwarder.maybeForward(record.withValue(new Change<>(newValue, oldValue, putReturnCode == PUT_RETURN_CODE_IS_LATEST)));
-                }
+                store.put(key, newValue);
+                tupleForwarder.maybeForward(key, newValue, oldValue);
             } else {
-                context.forward(record.withValue(new Change<>(newValue, oldValue, record.value().isLatest)));
+                context().forward(key, new Change<>(newValue, oldValue));
             }
-        }
-
-        private VOut computeOldValue(final KIn key, final Change<VIn> change) {
-            if (!sendOldValues) {
-                return null;
-            }
-
-            return queryableName != null
-                ? getValueOrNull(store.get(key))
-                : computeValue(key, change.oldValue);
         }
     }
 
+    private class KTableMapValuesValueGetter implements KTableValueGetter<K, V1> {
 
-    private class KTableMapValuesValueGetter implements KTableValueGetter<KIn, VOut> {
-        private final KTableValueGetter<KIn, VIn> parentGetter;
+        private final KTableValueGetter<K, V> parentGetter;
 
-        KTableMapValuesValueGetter(final KTableValueGetter<KIn, VIn> parentGetter) {
+        public KTableMapValuesValueGetter(KTableValueGetter<K, V> parentGetter) {
             this.parentGetter = parentGetter;
         }
 
         @Override
-        public void init(final ProcessorContext<?, ?> context) {
+        public void init(ProcessorContext context) {
             parentGetter.init(context);
         }
 
         @Override
-        public ValueAndTimestamp<VOut> get(final KIn key) {
-            return computeValueAndTimestamp(key, parentGetter.get(key));
+        public V1 get(K key) {
+            return computeValue(parentGetter.get(key));
         }
 
-        @Override
-        public ValueAndTimestamp<VOut> get(final KIn key, final long asOfTimestamp) {
-            return computeValueAndTimestamp(key, parentGetter.get(key, asOfTimestamp));
-        }
-
-        @Override
-        public boolean isVersioned() {
-            return parentGetter.isVersioned();
-        }
-
-        @Override
-        public void close() {
-            parentGetter.close();
-        }
     }
+
 }

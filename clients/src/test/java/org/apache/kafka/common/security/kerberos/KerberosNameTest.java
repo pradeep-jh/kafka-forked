@@ -16,27 +16,25 @@
  */
 package org.apache.kafka.common.security.kerberos;
 
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 
 public class KerberosNameTest {
 
     @Test
     public void testParse() throws IOException {
-        List<String> rules = Arrays.asList(
+        List<String> rules = new ArrayList<>(Arrays.asList(
             "RULE:[1:$1](App\\..*)s/App\\.(.*)/$1/g",
             "RULE:[2:$1](App\\..*)s/App\\.(.*)/$1/g",
             "DEFAULT"
-        );
-
+        ));
         KerberosShortNamer shortNamer = KerberosShortNamer.fromUnparsedRules("REALM.COM", rules);
 
         KerberosName name = KerberosName.parse("App.service-name/example.com@REALM.COM");
@@ -56,85 +54,5 @@ public class KerberosNameTest {
         assertEquals("host", name.hostName());
         assertEquals("REALM.COM", name.realm());
         assertEquals("user", shortNamer.shortName(name));
-    }
-
-    @Test
-    public void testToLowerCase() throws Exception {
-        List<String> rules = Arrays.asList(
-            "RULE:[1:$1]/L",
-            "RULE:[2:$1](Test.*)s/ABC///L",
-            "RULE:[2:$1](ABC.*)s/ABC/XYZ/g/L",
-            "RULE:[2:$1](App\\..*)s/App\\.(.*)/$1/g/L",
-            "RULE:[2:$1]/L",
-            "DEFAULT"
-        );
-
-        KerberosShortNamer shortNamer = KerberosShortNamer.fromUnparsedRules("REALM.COM", rules);
-
-        KerberosName name = KerberosName.parse("User@REALM.COM");
-        assertEquals("user", shortNamer.shortName(name));
-
-        name = KerberosName.parse("TestABC/host@FOO.COM");
-        assertEquals("test", shortNamer.shortName(name));
-
-        name = KerberosName.parse("ABC_User_ABC/host@FOO.COM");
-        assertEquals("xyz_user_xyz", shortNamer.shortName(name));
-
-        name = KerberosName.parse("App.SERVICE-name/example.com@REALM.COM");
-        assertEquals("service-name", shortNamer.shortName(name));
-
-        name = KerberosName.parse("User/root@REALM.COM");
-        assertEquals("user", shortNamer.shortName(name));
-    }
-
-    @Test
-    public void testToUpperCase() throws Exception {
-        List<String> rules = Arrays.asList(
-            "RULE:[1:$1]/U",
-            "RULE:[2:$1](Test.*)s/ABC///U",
-            "RULE:[2:$1](ABC.*)s/ABC/XYZ/g/U",
-            "RULE:[2:$1](App\\..*)s/App\\.(.*)/$1/g/U",
-            "RULE:[2:$1]/U",
-            "DEFAULT"
-        );
-
-        KerberosShortNamer shortNamer = KerberosShortNamer.fromUnparsedRules("REALM.COM", rules);
-
-        KerberosName name = KerberosName.parse("User@REALM.COM");
-        assertEquals("USER", shortNamer.shortName(name));
-
-        name = KerberosName.parse("TestABC/host@FOO.COM");
-        assertEquals("TEST", shortNamer.shortName(name));
-
-        name = KerberosName.parse("ABC_User_ABC/host@FOO.COM");
-        assertEquals("XYZ_USER_XYZ", shortNamer.shortName(name));
-
-        name = KerberosName.parse("App.SERVICE-name/example.com@REALM.COM");
-        assertEquals("SERVICE-NAME", shortNamer.shortName(name));
-
-        name = KerberosName.parse("User/root@REALM.COM");
-        assertEquals("USER", shortNamer.shortName(name));
-    }
-
-    @Test
-    public void testInvalidRules() {
-        testInvalidRule(Collections.singletonList("default"));
-        testInvalidRule(Collections.singletonList("DEFAUL"));
-        testInvalidRule(Collections.singletonList("DEFAULT/L"));
-        testInvalidRule(Collections.singletonList("DEFAULT/g"));
-
-        testInvalidRule(Collections.singletonList("rule:[1:$1]"));
-        testInvalidRule(Collections.singletonList("rule:[1:$1]/L/U"));
-        testInvalidRule(Collections.singletonList("rule:[1:$1]/U/L"));
-        testInvalidRule(Collections.singletonList("rule:[1:$1]/LU"));
-        testInvalidRule(Collections.singletonList("RULE:[1:$1/L"));
-        testInvalidRule(Collections.singletonList("RULE:[1:$1]/l"));
-        testInvalidRule(Collections.singletonList("RULE:[2:$1](ABC.*)s/ABC/XYZ/L/g"));
-    }
-
-    private void testInvalidRule(List<String> rules) {
-        assertThrows(
-            IllegalArgumentException.class,
-            () -> KerberosShortNamer.fromUnparsedRules("REALM.COM", rules));
     }
 }

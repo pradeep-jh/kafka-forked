@@ -17,13 +17,12 @@
 package org.apache.kafka.clients;
 
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * The set of requests which have been sent or are being sent but haven't yet received a response
@@ -32,8 +31,6 @@ final class InFlightRequests {
 
     private final int maxInFlightRequestsPerConnection;
     private final Map<String, Deque<NetworkClient.InFlightRequest>> requests = new HashMap<>();
-    /** Thread safe total number of in flight requests. */
-    private final AtomicInteger inFlightRequestCount = new AtomicInteger(0);
 
     public InFlightRequests(int maxInFlightRequestsPerConnection) {
         this.maxInFlightRequestsPerConnection = maxInFlightRequestsPerConnection;
@@ -44,9 +41,12 @@ final class InFlightRequests {
      */
     public void add(NetworkClient.InFlightRequest request) {
         String destination = request.destination;
-        Deque<NetworkClient.InFlightRequest> reqs = this.requests.computeIfAbsent(destination, k -> new ArrayDeque<>());
+        Deque<NetworkClient.InFlightRequest> reqs = this.requests.get(destination);
+        if (reqs == null) {
+            reqs = new ArrayDeque<>();
+            this.requests.put(destination, reqs);
+        }
         reqs.addFirst(request);
-        inFlightRequestCount.incrementAndGet();
     }
 
     /**
@@ -60,12 +60,10 @@ final class InFlightRequests {
     }
 
     /**
-     * Get the oldest request (the one that will be completed next) for the given node
+     * Get the oldest request (the one that that will be completed next) for the given node
      */
     public NetworkClient.InFlightRequest completeNext(String node) {
-        NetworkClient.InFlightRequest inFlightRequest = requestQueue(node).pollLast();
-        inFlightRequestCount.decrementAndGet();
-        return inFlightRequest;
+        return requestQueue(node).pollLast();
     }
 
     /**
@@ -82,9 +80,7 @@ final class InFlightRequests {
      * @return The request
      */
     public NetworkClient.InFlightRequest completeLastSent(String node) {
-        NetworkClient.InFlightRequest inFlightRequest = requestQueue(node).pollFirst();
-        inFlightRequestCount.decrementAndGet();
-        return inFlightRequest;
+        return requestQueue(node).pollFirst();
     }
 
     /**
@@ -118,10 +114,13 @@ final class InFlightRequests {
     }
 
     /**
-     * Count all in-flight requests for all nodes. This method is thread safe, but may lag the actual count.
+     * Count all in-flight requests for all nodes
      */
     public int count() {
-        return inFlightRequestCount.get();
+        int total = 0;
+        for (Deque<NetworkClient.InFlightRequest> deque : this.requests.values())
+            total += deque.size();
+        return total;
     }
 
     /**
@@ -142,45 +141,31 @@ final class InFlightRequests {
      * @return All the in-flight requests for that node that have been removed
      */
     public Iterable<NetworkClient.InFlightRequest> clearAll(String node) {
-        Deque<NetworkClient.InFlightRequest> reqs = requests.get(node);
-        if (reqs == null) {
-            return Collections.emptyList();
-        } else {
-            final Deque<NetworkClient.InFlightRequest> clearedRequests = requests.remove(node);
-            inFlightRequestCount.getAndAdd(-clearedRequests.size());
-            return clearedRequests::descendingIterator;
-        }
-    }
-
-    private Boolean hasExpiredRequest(long now, Deque<NetworkClient.InFlightRequest> deque) {
-        for (NetworkClient.InFlightRequest request : deque) {
-            // We exclude throttle time here because we want to ensure that we don't expire requests while
-            // they are throttled. The request timeout should take effect only after the throttle time has elapsed.
-            if (request.timeElapsedSinceSendMs(now) - request.throttleTimeMs() > request.requestTimeoutMs)
-                return true;
-        }
-        return false;
+        Deque<NetworkClient.InFlightRequest> reqs = requests.remove(node);
+        return (reqs == null) ? Collections.<NetworkClient.InFlightRequest>emptyList() : reqs;
     }
 
     /**
      * Returns a list of nodes with pending in-flight request, that need to be timed out
      *
      * @param now current time in milliseconds
+     * @param requestTimeoutMs max time to wait for the request to be completed
      * @return list of nodes
      */
-    public List<String> nodesWithTimedOutRequests(long now) {
-        List<String> nodeIds = new ArrayList<>();
+    public List<String> getNodesWithTimedOutRequests(long now, int requestTimeoutMs) {
+        List<String> nodeIds = new LinkedList<>();
         for (Map.Entry<String, Deque<NetworkClient.InFlightRequest>> requestEntry : requests.entrySet()) {
             String nodeId = requestEntry.getKey();
             Deque<NetworkClient.InFlightRequest> deque = requestEntry.getValue();
-            if (hasExpiredRequest(now, deque))
-                nodeIds.add(nodeId);
+
+            if (!deque.isEmpty()) {
+                NetworkClient.InFlightRequest request = deque.peekLast();
+                long timeSinceSend = now - request.sendTimeMs;
+                if (timeSinceSend > requestTimeoutMs)
+                    nodeIds.add(nodeId);
+            }
         }
         return nodeIds;
     }
-
-    void incrementThrottleTime(String nodeId, long throttleTimeMs) {
-        requests.getOrDefault(nodeId, new ArrayDeque<>()).
-                forEach(request -> request.incrementThrottleTime(throttleTimeMs));
-    }
+    
 }

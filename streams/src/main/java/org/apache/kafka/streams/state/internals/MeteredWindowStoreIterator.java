@@ -20,50 +20,29 @@ import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.streams.KeyValue;
 import org.apache.kafka.streams.StreamsMetrics;
+import org.apache.kafka.streams.state.StateSerdes;
 import org.apache.kafka.streams.state.WindowStoreIterator;
 
-import java.util.Set;
-import java.util.concurrent.atomic.LongAdder;
-import java.util.function.Function;
-
-class MeteredWindowStoreIterator<V> implements WindowStoreIterator<V>, MeteredIterator {
+class MeteredWindowStoreIterator<V> implements WindowStoreIterator<V> {
 
     private final WindowStoreIterator<byte[]> iter;
-    private final Sensor operationSensor;
-    private final Sensor iteratorSensor;
+    private final Sensor sensor;
     private final StreamsMetrics metrics;
-    private final Function<byte[], V> valueFrom;
+    private final StateSerdes<?, V> serdes;
     private final long startNs;
-    private final long startTimestampMs;
     private final Time time;
-    private final LongAdder numOpenIterators;
-    private final Set<MeteredIterator> openIterators;
 
     MeteredWindowStoreIterator(final WindowStoreIterator<byte[]> iter,
-                               final Sensor operationSensor,
-                               final Sensor iteratorSensor,
+                               final Sensor sensor,
                                final StreamsMetrics metrics,
-                               final Function<byte[], V> valueFrom,
-                               final Time time,
-                               final LongAdder numOpenIterators,
-                               final Set<MeteredIterator> openIterators) {
+                               final StateSerdes<?, V> serdes,
+                               final Time time) {
         this.iter = iter;
-        this.operationSensor = operationSensor;
-        this.iteratorSensor = iteratorSensor;
+        this.sensor = sensor;
         this.metrics = metrics;
-        this.valueFrom = valueFrom;
+        this.serdes = serdes;
         this.startNs = time.nanoseconds();
-        this.startTimestampMs = time.milliseconds();
         this.time = time;
-        this.numOpenIterators = numOpenIterators;
-        this.openIterators = openIterators;
-        numOpenIterators.increment();
-        openIterators.add(this);
-    }
-
-    @Override
-    public long startTimestamp() {
-        return startTimestampMs;
     }
 
     @Override
@@ -74,7 +53,12 @@ class MeteredWindowStoreIterator<V> implements WindowStoreIterator<V>, MeteredIt
     @Override
     public KeyValue<Long, V> next() {
         final KeyValue<Long, byte[]> next = iter.next();
-        return KeyValue.pair(next.key, valueFrom.apply(next.value));
+        return KeyValue.pair(next.key, serdes.valueFrom(next.value));
+    }
+
+    @Override
+    public void remove() {
+        iter.remove();
     }
 
     @Override
@@ -82,11 +66,7 @@ class MeteredWindowStoreIterator<V> implements WindowStoreIterator<V>, MeteredIt
         try {
             iter.close();
         } finally {
-            final long duration = time.nanoseconds() - startNs;
-            operationSensor.record(duration);
-            iteratorSensor.record(duration);
-            numOpenIterators.decrement();
-            openIterators.remove(this);
+            metrics.recordLatency(this.sensor, this.startNs, time.nanoseconds());
         }
     }
 

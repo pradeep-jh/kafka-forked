@@ -17,16 +17,13 @@
 package org.apache.kafka.common.security.authenticator;
 
 import org.apache.kafka.clients.CommonClientConfigs;
-import org.apache.kafka.clients.admin.Admin;
-import org.apache.kafka.clients.admin.TopicDescription;
+import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.DescribeTopicsResult;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.clients.producer.RecordMetadata;
-import org.apache.kafka.common.KafkaFuture;
-import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.config.SaslConfigs;
 import org.apache.kafka.common.config.internals.BrokerSecurityConfigs;
 import org.apache.kafka.common.errors.SaslAuthenticationException;
@@ -37,47 +34,43 @@ import org.apache.kafka.common.security.TestSecurityConfig;
 import org.apache.kafka.common.security.auth.SecurityProtocol;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
-import org.apache.kafka.common.utils.MockTime;
-import org.apache.kafka.test.TestUtils;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-
-import java.time.Duration;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.Future;
 
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class ClientAuthenticationFailureTest {
-    private static final MockTime TIME = new MockTime(50);
 
     private NioEchoServer server;
     private Map<String, Object> saslServerConfigs;
     private Map<String, Object> saslClientConfigs;
     private final String topic = "test";
+    private TestJaasConfig testJaasConfig;
 
-    @BeforeEach
+    @Before
     public void setup() throws Exception {
-        LoginManager.closeAll();
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_PLAINTEXT;
 
         saslServerConfigs = new HashMap<>();
-        saslServerConfigs.put(BrokerSecurityConfigs.SASL_ENABLED_MECHANISMS_CONFIG, Collections.singletonList("PLAIN"));
+        saslServerConfigs.put(BrokerSecurityConfigs.SASL_ENABLED_MECHANISMS_CONFIG, Arrays.asList("PLAIN"));
 
         saslClientConfigs = new HashMap<>();
         saslClientConfigs.put(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG, "SASL_PLAINTEXT");
         saslClientConfigs.put(SaslConfigs.SASL_MECHANISM, "PLAIN");
 
-        TestJaasConfig testJaasConfig = TestJaasConfig.createConfiguration("PLAIN", Collections.singletonList("PLAIN"));
+        testJaasConfig = TestJaasConfig.createConfiguration("PLAIN", Arrays.asList("PLAIN"));
         testJaasConfig.setClientOptions("PLAIN", TestJaasConfig.USERNAME, "anotherpassword");
         server = createEchoServer(securityProtocol);
     }
 
-    @AfterEach
+    @After
     public void teardown() throws Exception {
         if (server != null)
             server.close();
@@ -90,10 +83,13 @@ public class ClientAuthenticationFailureTest {
         StringDeserializer deserializer = new StringDeserializer();
 
         try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props, deserializer, deserializer)) {
-            assertThrows(SaslAuthenticationException.class, () -> {
-                consumer.assign(Collections.singleton(new TopicPartition(topic, 0)));
-                consumer.poll(Duration.ofSeconds(10));
-            });
+            consumer.subscribe(Arrays.asList(topic));
+            consumer.poll(100);
+            fail("Expected an authentication error!");
+        } catch (SaslAuthenticationException e) {
+            // OK
+        } catch (Exception e) {
+            fail("Expected only an authentication error, but another error occurred: " + e.getMessage());
         }
     }
 
@@ -105,8 +101,11 @@ public class ClientAuthenticationFailureTest {
 
         try (KafkaProducer<String, String> producer = new KafkaProducer<>(props, serializer, serializer)) {
             ProducerRecord<String, String> record = new ProducerRecord<>(topic, "message");
-            Future<RecordMetadata> future = producer.send(record);
-            TestUtils.assertFutureThrows(SaslAuthenticationException.class, future);
+            producer.send(record).get();
+            fail("Expected an authentication error!");
+        } catch (Exception e) {
+            assertTrue("Expected SaslAuthenticationException, got " + e.getCause().getClass(),
+                    e.getCause() instanceof SaslAuthenticationException);
         }
     }
 
@@ -114,14 +113,18 @@ public class ClientAuthenticationFailureTest {
     public void testAdminClientWithInvalidCredentials() {
         Map<String, Object> props = new HashMap<>(saslClientConfigs);
         props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:" + server.port());
-        try (Admin client = Admin.create(props)) {
-            KafkaFuture<Map<String, TopicDescription>> future = client.describeTopics(Collections.singleton("test")).allTopicNames();
-            TestUtils.assertFutureThrows(SaslAuthenticationException.class, future);
+        try (AdminClient client = AdminClient.create(props)) {
+            DescribeTopicsResult result = client.describeTopics(Collections.singleton("test"));
+            result.all().get();
+            fail("Expected an authentication error!");
+        } catch (Exception e) {
+            assertTrue("Expected SaslAuthenticationException, got " + e.getCause().getClass(),
+                    e.getCause() instanceof SaslAuthenticationException);
         }
     }
 
     @Test
-    public void testTransactionalProducerWithInvalidCredentials() {
+    public void testTransactionalProducerWithInvalidCredentials() throws Exception {
         Map<String, Object> props = new HashMap<>(saslClientConfigs);
         props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:" + server.port());
         props.put(ProducerConfig.TRANSACTIONAL_ID_CONFIG, "txclient-1");
@@ -129,7 +132,10 @@ public class ClientAuthenticationFailureTest {
         StringSerializer serializer = new StringSerializer();
 
         try (KafkaProducer<String, String> producer = new KafkaProducer<>(props, serializer, serializer)) {
-            assertThrows(SaslAuthenticationException.class, producer::initTransactions);
+            producer.initTransactions();
+            fail("Expected an authentication error!");
+        } catch (SaslAuthenticationException e) {
+            // expected exception
         }
     }
 
@@ -139,6 +145,6 @@ public class ClientAuthenticationFailureTest {
 
     private NioEchoServer createEchoServer(ListenerName listenerName, SecurityProtocol securityProtocol) throws Exception {
         return NetworkTestUtils.createEchoServer(listenerName, securityProtocol,
-                new TestSecurityConfig(saslServerConfigs), new CredentialCache(), TIME);
+                new TestSecurityConfig(saslServerConfigs), new CredentialCache());
     }
 }

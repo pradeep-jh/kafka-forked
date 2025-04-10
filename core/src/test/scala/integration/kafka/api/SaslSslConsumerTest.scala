@@ -12,23 +12,25 @@
   */
 package kafka.api
 
-import kafka.security.JaasTestUtils
-import kafka.utils.TestUtils
+import java.io.File
+
+import kafka.server.KafkaConfig
+import kafka.utils.JaasTestUtils
 import org.apache.kafka.common.security.auth.SecurityProtocol
-import org.junit.jupiter.api.{AfterEach, BeforeEach, TestInfo, Timeout}
+import org.junit.{After, Before}
 
-@Timeout(600)
 class SaslSslConsumerTest extends BaseConsumerTest with SaslSetup {
+  this.serverConfig.setProperty(KafkaConfig.ZkEnableSecureAclsProp, "true")
   override protected def securityProtocol = SecurityProtocol.SASL_SSL
-  override protected lazy val trustStoreFile = Some(TestUtils.tempFile("truststore", ".jks"))
+  override protected lazy val trustStoreFile = Some(File.createTempFile("truststore", ".jks"))
 
-  @BeforeEach
-  override def setUp(testInfo: TestInfo): Unit = {
-    startSasl(jaasSections(Seq("GSSAPI"), Some("GSSAPI"), JaasTestUtils.KAFKA_SERVER_CONTEXT_NAME))
-    super.setUp(testInfo)
+  @Before
+  override def setUp(): Unit = {
+    startSasl(jaasSections(Seq("GSSAPI"), Some("GSSAPI"), Both, JaasTestUtils.KafkaServerContextName))
+    super.setUp()
   }
 
-  @AfterEach
+  @After
   override def tearDown(): Unit = {
     super.tearDown()
     closeSasl()

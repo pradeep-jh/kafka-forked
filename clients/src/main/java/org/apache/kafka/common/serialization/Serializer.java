@@ -16,8 +16,6 @@
  */
 package org.apache.kafka.common.serialization;
 
-import org.apache.kafka.common.header.Headers;
-
 import java.io.Closeable;
 import java.util.Map;
 
@@ -27,8 +25,7 @@ import java.util.Map;
  * A class that implements this interface is expected to have a constructor with no parameter.
  * <p>
  * Implement {@link org.apache.kafka.common.ClusterResourceListener} to receive cluster metadata once it's available. Please see the class documentation for ClusterResourceListener for more information.
- * Implement {@link org.apache.kafka.common.metrics.Monitorable} to enable the serializer to register metrics. The following tags ae automatically added to
- * all metrics registered: <code>config</code> set to either <code>key.serializer</code> or <code>value.serializer</code>, and <code>class</code> set to the Serializer class name.
+ *
  * @param <T> Type to be serialized from.
  */
 public interface Serializer<T> extends Closeable {
@@ -38,9 +35,7 @@ public interface Serializer<T> extends Closeable {
      * @param configs configs in key/value pairs
      * @param isKey whether is for key or value
      */
-    default void configure(Map<String, ?> configs, boolean isKey) {
-        // intentionally left blank
-    }
+    void configure(Map<String, ?> configs, boolean isKey);
 
     /**
      * Convert {@code data} into a byte array.
@@ -52,24 +47,10 @@ public interface Serializer<T> extends Closeable {
     byte[] serialize(String topic, T data);
 
     /**
-     * Convert {@code data} into a byte array.
-     *
-     * @param topic topic associated with data
-     * @param headers headers associated with the record
-     * @param data typed data
-     * @return serialized bytes
-     */
-    default byte[] serialize(String topic, Headers headers, T data) {
-        return serialize(topic, data);
-    }
-
-    /**
      * Close this serializer.
-     * <p>
+     *
      * This method must be idempotent as it may be called multiple times.
      */
     @Override
-    default void close() {
-        // intentionally left blank
-    }
+    void close();
 }

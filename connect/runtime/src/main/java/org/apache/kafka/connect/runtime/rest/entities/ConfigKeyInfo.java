@@ -141,28 +141,30 @@ public class ConfigKeyInfo {
 
     @Override
     public String toString() {
-        return "[" +
-                name +
-                "," +
-                type +
-                "," +
-                required +
-                "," +
-                defaultValue +
-                "," +
-                importance +
-                "," +
-                documentation +
-                "," +
-                group +
-                "," +
-                orderInGroup +
-                "," +
-                width +
-                "," +
-                displayName +
-                "," +
-                dependents +
-                "]";
+        StringBuffer sb = new StringBuffer();
+        sb.append("[")
+            .append(name)
+            .append(",")
+            .append(type)
+            .append(",")
+            .append(required)
+            .append(",")
+            .append(defaultValue)
+            .append(",")
+            .append(importance)
+            .append(",")
+            .append(documentation)
+            .append(",")
+            .append(group)
+            .append(",")
+            .append(orderInGroup)
+            .append(",")
+            .append(width)
+            .append(",")
+            .append(displayName)
+            .append(",")
+            .append(dependents)
+            .append("]");
+        return sb.toString();
     }
 }

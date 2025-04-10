@@ -20,7 +20,8 @@ from ducktape.mark.resource import cluster
 from ducktape.utils.util import wait_until
 
 from kafkatest.services.performance import ProducerPerformanceService
-from kafkatest.services.kafka import KafkaService, quorum
+from kafkatest.services.zookeeper import ZookeeperService
+from kafkatest.services.kafka import KafkaService
 from kafkatest.services.console_consumer import ConsoleConsumer
 from kafkatest.tests.produce_consume_validate import ProduceConsumeValidateTest
 from kafkatest.services.verifiable_producer import VerifiableProducer
@@ -45,18 +46,19 @@ class ThrottlingTest(ProduceConsumeValidateTest):
         super(ThrottlingTest, self).__init__(test_context=test_context)
 
         self.topic = "test_topic"
+        self.zk = ZookeeperService(test_context, num_nodes=1)
         # Because we are starting the producer/consumer/validate cycle _after_
         # seeding the cluster with big data (to test throttling), we need to
         # Start the consumer from the end of the stream. further, we need to
         # ensure that the consumer is fully started before the producer starts
         # so that we don't miss any messages. This timeout ensures the sufficient
         # condition.
-        self.consumer_init_timeout_sec =  60
+        self.consumer_init_timeout_sec =  20
         self.num_brokers = 6
         self.num_partitions = 3
         self.kafka = KafkaService(test_context,
                                   num_nodes=self.num_brokers,
-                                  zk=None,
+                                  zk=self.zk,
                                   topics={
                                       self.topic: {
                                           "partitions": self.num_partitions,
@@ -65,17 +67,19 @@ class ThrottlingTest(ProduceConsumeValidateTest):
                                               "segment.bytes": 64 * 1024 * 1024
                                           }
                                       }
-                                  },
-                                  controller_num_nodes_override=1)
+                                  })
         self.producer_throughput = 1000
         self.timeout_sec = 400
         self.num_records = 2000
         self.record_size = 4096 * 100  # 400 KB
         # 1 MB per partition on average.
-        self.partition_size = (self.num_records * self.record_size) // self.num_partitions
+        self.partition_size = (self.num_records * self.record_size) / self.num_partitions
         self.num_producers = 2
         self.num_consumers = 1
         self.throttle = 4 * 1024 * 1024  # 4 MB/s
+
+    def setUp(self):
+        self.zk.start()
 
     def min_cluster_size(self):
         # Override this since we're adding services outside of the constructor
@@ -135,9 +139,9 @@ class ThrottlingTest(ProduceConsumeValidateTest):
                 time_taken))
 
     @cluster(num_nodes=10)
-    @parametrize(bounce_brokers=True, metadata_quorum=quorum.isolated_kraft)
-    @parametrize(bounce_brokers=False, metadata_quorum=quorum.isolated_kraft)
-    def test_throttled_reassignment(self, bounce_brokers, metadata_quorum):
+    @parametrize(bounce_brokers=True)
+    @parametrize(bounce_brokers=False)
+    def test_throttled_reassignment(self, bounce_brokers):
         security_protocol = 'PLAINTEXT'
         self.kafka.security_protocol = security_protocol
         self.kafka.interbroker_security_protocol = security_protocol
@@ -146,7 +150,9 @@ class ThrottlingTest(ProduceConsumeValidateTest):
         bulk_producer = ProducerPerformanceService(
             context=self.test_context, num_nodes=1, kafka=self.kafka,
             topic=self.topic, num_records=self.num_records,
-            record_size=self.record_size, throughput=-1, client_id=producer_id)
+            record_size=self.record_size, throughput=-1, client_id=producer_id,
+            jmx_object_names=['kafka.producer:type=producer-metrics,client-id=%s' % producer_id],
+            jmx_attributes=['outgoing-byte-rate'])
 
 
         self.producer = VerifiableProducer(context=self.test_context,
@@ -161,16 +167,9 @@ class ThrottlingTest(ProduceConsumeValidateTest):
                                         self.topic,
                                         consumer_timeout_ms=60000,
                                         message_validator=is_int,
-                                        from_beginning=False,
-                                        wait_until_partitions_assigned=True)
+                                        from_beginning=False)
 
         self.kafka.start()
         bulk_producer.run()
         self.run_produce_consume_validate(core_test_action=
                                           lambda: self.reassign_partitions(bounce_brokers, self.throttle))
-
-        self.logger.debug("Bulk producer outgoing-byte-rates: %s",
-                          (metric.value for k, metrics in
-                          bulk_producer.metrics(group='producer-metrics', name='outgoing-byte-rate', client_id=producer_id) for
-                          metric in metrics)
-        )

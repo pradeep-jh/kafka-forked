@@ -16,9 +16,9 @@
  */
 package org.apache.kafka.common.metrics.stats;
 
-import org.apache.kafka.common.metrics.MetricConfig;
-
 import java.util.List;
+
+import org.apache.kafka.common.metrics.MetricConfig;
 
 /**
  * A {@link SampledStat} that gives the max over its samples.
@@ -37,12 +37,9 @@ public final class Max extends SampledStat {
     @Override
     public double combine(List<Sample> samples, MetricConfig config, long now) {
         double max = Double.NEGATIVE_INFINITY;
-        long count = 0;
-        for (Sample sample : samples) {
+        for (Sample sample : samples)
             max = Math.max(max, sample.value);
-            count += sample.eventCount;
-        }
-        return count == 0 ? Double.NaN : max;
+        return max;
     }
 
 }

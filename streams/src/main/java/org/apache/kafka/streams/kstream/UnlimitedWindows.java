@@ -16,16 +16,11 @@
  */
 package org.apache.kafka.streams.kstream;
 
-import org.apache.kafka.streams.internals.ApiUtils;
 import org.apache.kafka.streams.kstream.internals.UnlimitedWindow;
 import org.apache.kafka.streams.processor.TimestampExtractor;
 
-import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Objects;
-
-import static org.apache.kafka.streams.internals.ApiUtils.prepareMillisCheckFailMsgPrefix;
 
 /**
  * The unlimited window specifications used for aggregations.
@@ -47,7 +42,6 @@ public final class UnlimitedWindows extends Windows<UnlimitedWindow> {
     private static final long DEFAULT_START_TIMESTAMP_MS = 0L;
 
     /** The start timestamp of the window. */
-    @SuppressWarnings("WeakerAccess")
     public final long startMs;
 
     private UnlimitedWindows(final long startMs) {
@@ -64,13 +58,11 @@ public final class UnlimitedWindows extends Windows<UnlimitedWindow> {
     /**
      * Return a new unlimited window for the specified start timestamp.
      *
-     * @param start the window start time
-     * @return a new unlimited window that starts at {@code start}
-     * @throws IllegalArgumentException if the start time is negative or can't be represented as {@code long milliseconds}
+     * @param startMs the window start time
+     * @return a new unlimited window that starts at {@code startMs}
+     * @throws IllegalArgumentException if the start time is negative
      */
-    public UnlimitedWindows startOn(final Instant start) throws IllegalArgumentException {
-        final String msgPrefix = prepareMillisCheckFailMsgPrefix(start, "start");
-        final long startMs = ApiUtils.validateMillisecondInstant(start, msgPrefix);
+    public UnlimitedWindows startOn(final long startMs) throws IllegalArgumentException {
         if (startMs < 0) {
             throw new IllegalArgumentException("Window start time (startMs) cannot be negative.");
         }
@@ -91,7 +83,7 @@ public final class UnlimitedWindows extends Windows<UnlimitedWindow> {
 
     /**
      * {@inheritDoc}
-     * As unlimited windows have conceptually infinite size, this method just returns {@link Long#MAX_VALUE}.
+     * As unlimited windows have conceptually infinite size, this methods just returns {@link Long#MAX_VALUE}.
      *
      * @return the size of the specified windows which is {@link Long#MAX_VALUE}
      */
@@ -100,32 +92,45 @@ public final class UnlimitedWindows extends Windows<UnlimitedWindow> {
         return Long.MAX_VALUE;
     }
 
+    /**
+     * Throws an {@link IllegalArgumentException} because the retention time for unlimited windows is always infinite
+     * and cannot be changed.
+     *
+     * @throws IllegalArgumentException on every invocation
+     */
     @Override
-    public long gracePeriodMs() {
-        return 0L;
+    public UnlimitedWindows until(final long durationMs) {
+        throw new IllegalArgumentException("Window retention time (durationMs) cannot be set for UnlimitedWindows.");
+    }
+
+    /**
+     * {@inheritDoc}
+     * The retention time for unlimited windows in infinite and thus represented as {@link Long#MAX_VALUE}.
+     *
+     * @return the window retention time that is {@link Long#MAX_VALUE}
+     */
+    @Override
+    public long maintainMs() {
+        return Long.MAX_VALUE;
     }
 
     @Override
     public boolean equals(final Object o) {
-        if (this == o) {
+        if (o == this) {
             return true;
         }
-        if (o == null || getClass() != o.getClass()) {
+
+        if (!(o instanceof UnlimitedWindows)) {
             return false;
         }
-        final UnlimitedWindows that = (UnlimitedWindows) o;
-        return startMs == that.startMs;
+
+        final UnlimitedWindows other = (UnlimitedWindows) o;
+        return startMs == other.startMs;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(startMs);
+        return (int) (startMs ^ (startMs >>> 32));
     }
 
-    @Override
-    public String toString() {
-        return "UnlimitedWindows{" +
-            "startMs=" + startMs +
-            '}';
-    }
 }

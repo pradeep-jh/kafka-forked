@@ -17,25 +17,17 @@
 
 package org.apache.kafka.clients.admin;
 
-import java.util.Objects;
+import org.apache.kafka.common.annotation.InterfaceStability;
 
 /**
- * Options for {@link Admin#listTopics()}.
+ * Options for {@link AdminClient#listTopics()}.
+ *
+ * The API of this class is evolving, see {@link AdminClient} for details.
  */
+@InterfaceStability.Evolving
 public class ListTopicsOptions extends AbstractOptions<ListTopicsOptions> {
 
     private boolean listInternal = false;
-
-    /**
-     * Set the timeout in milliseconds for this operation or {@code null} if the default api timeout for the
-     * AdminClient should be used.
-     *
-     */
-    // This method is retained to keep binary compatibility with 0.11
-    public ListTopicsOptions timeoutMs(Integer timeoutMs) {
-        this.timeoutMs = timeoutMs;
-        return this;
-    }
 
     /**
      * Set whether we should list internal topics.
@@ -54,25 +46,5 @@ public class ListTopicsOptions extends AbstractOptions<ListTopicsOptions> {
      */
     public boolean shouldListInternal() {
         return listInternal;
-    }
-
-    @Override
-    public String toString() {
-        return "ListTopicsOptions(" +
-            "listInternal=" + listInternal +
-            ')';
-    }
-
-    @Override
-    public boolean equals(Object o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
-        ListTopicsOptions that = (ListTopicsOptions) o;
-        return listInternal == that.listInternal;
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(listInternal);
     }
 }

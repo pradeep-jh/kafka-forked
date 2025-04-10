@@ -16,17 +16,17 @@
   */
 package kafka.api
 
-import kafka.utils.TestInfoUtils
-import org.apache.kafka.clients.consumer.ConsumerConfig
+import java.util.Properties
+
+import kafka.utils.TestUtils
+import kafka.utils.Implicits._
 import org.apache.kafka.common.config.SaslConfigs
 import org.apache.kafka.common.security.auth.SecurityProtocol
-import org.apache.kafka.common.errors.{GroupAuthorizationException, TopicAuthorizationException}
-import org.junit.jupiter.api.{BeforeEach, TestInfo, Timeout}
-import org.junit.jupiter.api.Assertions.{assertEquals, assertTrue, fail}
-import org.junit.jupiter.params.ParameterizedTest
-import org.junit.jupiter.params.provider.MethodSource
+import org.apache.kafka.common.errors.TopicAuthorizationException
+import org.junit.{Before, Test}
 
-import scala.jdk.CollectionConverters._
+import scala.collection.immutable.List
+import scala.collection.JavaConverters._
 
 abstract class SaslEndToEndAuthorizationTest extends EndToEndAuthorizationTest {
   override protected def securityProtocol = SecurityProtocol.SASL_SSL
@@ -36,20 +36,16 @@ abstract class SaslEndToEndAuthorizationTest extends EndToEndAuthorizationTest {
   protected def kafkaClientSaslMechanism: String
   protected def kafkaServerSaslMechanisms: List[String]
   
-  @BeforeEach
-  override def setUp(testInfo: TestInfo): Unit = {
+  @Before
+  override def setUp {
     // create static config including client login context with credentials for JaasTestUtils 'client2'
-    startSasl(jaasSections(kafkaServerSaslMechanisms, Option(kafkaClientSaslMechanism)))
+    startSasl(jaasSections(kafkaServerSaslMechanisms, Option(kafkaClientSaslMechanism), Both))
     // set dynamic properties with credentials for JaasTestUtils 'client1' so that dynamic JAAS configuration is also
     // tested by this set of tests
     val clientLoginContext = jaasClientLoginModule(kafkaClientSaslMechanism)
     producerConfig.put(SaslConfigs.SASL_JAAS_CONFIG, clientLoginContext)
     consumerConfig.put(SaslConfigs.SASL_JAAS_CONFIG, clientLoginContext)
-    adminClientConfig.put(SaslConfigs.SASL_JAAS_CONFIG, clientLoginContext)
-
-    val superuserLoginContext = jaasAdminLoginModule(kafkaClientSaslMechanism)
-    superuserClientConfig.put(SaslConfigs.SASL_JAAS_CONFIG, superuserLoginContext)
-    super.setUp(testInfo)
+    super.setUp
   }
 
   /**
@@ -57,19 +53,23 @@ abstract class SaslEndToEndAuthorizationTest extends EndToEndAuthorizationTest {
     * The first consumer succeeds because it is allowed by the ACL, 
     * the second one connects ok, but fails to consume messages due to the ACL.
     */
-  @Timeout(15)
-  @ParameterizedTest(name = TestInfoUtils.TestWithParameterizedGroupProtocolNames)
-  @MethodSource(Array("getTestGroupProtocolParametersAll"))
-  def testTwoConsumersWithDifferentSaslCredentials(groupProtocol: String): Unit = {
-    setAclsAndProduce(tp)
-    consumerConfig.putIfAbsent(ConsumerConfig.GROUP_PROTOCOL_CONFIG, groupProtocol)
-    val consumer1 = createConsumer()
+  @Test(timeout = 15000)
+  def testTwoConsumersWithDifferentSaslCredentials(): Unit = {
+    setAclsAndProduce()
+    val consumer1 = consumers.head
 
+    val consumer2Config = new Properties
+    consumer2Config ++= consumerConfig
     // consumer2 retrieves its credentials from the static JAAS configuration, so we test also this path
-    consumerConfig.remove(SaslConfigs.SASL_JAAS_CONFIG)
-    consumerConfig.remove(SaslConfigs.SASL_CLIENT_CALLBACK_HANDLER_CLASS)
+    consumer2Config.remove(SaslConfigs.SASL_JAAS_CONFIG)
 
-    val consumer2 = createConsumer()
+    val consumer2 = TestUtils.createNewConsumer(brokerList,
+                                                securityProtocol = securityProtocol,
+                                                trustStoreFile = trustStoreFile,
+                                                saslProperties = clientSaslProperties,
+                                                props = Some(consumer2Config))
+    consumers += consumer2
+
     consumer1.assign(List(tp).asJava)
     consumer2.assign(List(tp).asJava)
 
@@ -77,14 +77,9 @@ abstract class SaslEndToEndAuthorizationTest extends EndToEndAuthorizationTest {
 
     try {
       consumeRecords(consumer2)
-      fail("Expected exception as consumer2 has no access to topic or group")
+      fail("Expected exception as consumer2 has no access to topic")
     } catch {
-      // Either exception is possible depending on the order that the first Metadata
-      // and FindCoordinator requests are received
-      case e: TopicAuthorizationException => assertTrue(e.unauthorizedTopics.contains(topic))
-      case e: GroupAuthorizationException => assertEquals(group, e.groupId)
+      case _: TopicAuthorizationException => //expected
     }
-    confirmReauthenticationMetrics()
-
   }
 }

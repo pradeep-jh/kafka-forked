@@ -18,7 +18,7 @@ package org.apache.kafka.connect.runtime.rest.errors;
 
 import org.apache.kafka.connect.errors.ConnectException;
 
-import jakarta.ws.rs.core.Response;
+import javax.ws.rs.core.Response;
 
 public class ConnectRestException extends ConnectException {
     private final int statusCode;

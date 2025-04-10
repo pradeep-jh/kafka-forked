@@ -23,94 +23,101 @@ import org.apache.kafka.streams.kstream.Aggregator;
 import org.apache.kafka.streams.kstream.Initializer;
 import org.apache.kafka.streams.kstream.KeyValueMapper;
 import org.apache.kafka.streams.kstream.Windowed;
-import org.apache.kafka.streams.processor.api.ContextualProcessor;
-import org.apache.kafka.streams.processor.api.ProcessorContext;
-import org.apache.kafka.streams.processor.api.ProcessorSupplier;
-import org.apache.kafka.streams.processor.api.Record;
+import org.apache.kafka.streams.processor.AbstractProcessor;
+import org.apache.kafka.streams.processor.Processor;
+import org.apache.kafka.streams.processor.ProcessorContext;
+import org.apache.kafka.streams.processor.ProcessorSupplier;
 
-import java.time.Instant;
+import java.io.File;
 
 public class SmokeTestUtil {
 
-    static final int END = Integer.MAX_VALUE;
+    final static int END = Integer.MAX_VALUE;
 
-    static ProcessorSupplier<Object, Object, Void, Void> printProcessorSupplier(final String topic) {
-        return printProcessorSupplier(topic, "");
+    static ProcessorSupplier<Object, Object> printProcessorSupplier(final String topic) {
+        return printProcessorSupplier(topic, false);
     }
 
-    static ProcessorSupplier<Object, Object, Void, Void> printProcessorSupplier(final String topic, final String name) {
-        return () -> new ContextualProcessor<Object, Object, Void, Void>() {
-            private int numRecordsProcessed = 0;
-            private long smallestOffset = Long.MAX_VALUE;
-            private long largestOffset = Long.MIN_VALUE;
-
+    private static ProcessorSupplier<Object, Object> printProcessorSupplier(final String topic, final boolean printOffset) {
+        return new ProcessorSupplier<Object, Object>() {
             @Override
-            public void init(final ProcessorContext<Void, Void> context) {
-                super.init(context);
-                System.out.println("[DEV] initializing processor: topic=" + topic + " taskId=" + context.taskId());
-                System.out.flush();
-                numRecordsProcessed = 0;
-                smallestOffset = Long.MAX_VALUE;
-                largestOffset = Long.MIN_VALUE;
-            }
+            public Processor<Object, Object> get() {
+                return new AbstractProcessor<Object, Object>() {
+                    private int numRecordsProcessed = 0;
+                    private ProcessorContext context;
 
-            @Override
-            public void process(final Record<Object, Object> record) {
-                numRecordsProcessed++;
-                if (numRecordsProcessed % 100 == 0) {
-                    System.out.printf("%s: %s%n", name, Instant.now());
-                    System.out.println("processed " + numRecordsProcessed + " records from topic=" + topic);
-                }
-
-                if (context().recordMetadata().isPresent()) {
-                    if (smallestOffset > context().recordMetadata().get().offset()) {
-                        smallestOffset = context().recordMetadata().get().offset();
+                    @Override
+                    public void init(final ProcessorContext context) {
+                        System.out.println("initializing processor: topic=" + topic + " taskId=" + context.taskId());
+                        numRecordsProcessed = 0;
+                        this.context = context;
                     }
-                    if (largestOffset < context().recordMetadata().get().offset()) {
-                        largestOffset = context().recordMetadata().get().offset();
-                    }
-                }
-            }
 
-            @Override
-            public void close() {
-                System.out.printf("Close processor for task %s%n", context().taskId());
-                System.out.println("processed " + numRecordsProcessed + " records");
-                final long processed;
-                if (largestOffset >= smallestOffset) {
-                    processed = 1L + largestOffset - smallestOffset;
-                } else {
-                    processed = 0L;
-                }
-                System.out.println("offset " + smallestOffset + " to " + largestOffset + " -> processed " + processed);
-                System.out.flush();
+                    @Override
+                    public void process(final Object key, final Object value) {
+                        if (printOffset) {
+                            System.out.println(">>> " + context.offset());
+                        }
+                        numRecordsProcessed++;
+                        if (numRecordsProcessed % 100 == 0) {
+                            System.out.println(System.currentTimeMillis());
+                            System.out.println("processed " + numRecordsProcessed + " records from topic=" + topic);
+                        }
+                    }
+
+                    @Override
+                    public void punctuate(final long timestamp) { }
+
+                    @Override
+                    public void close() { }
+                };
             }
         };
     }
 
-    public static final class Unwindow<K, V> implements KeyValueMapper<Windowed<K>, V, K> {
+    public static final class Unwindow<K, V> implements KeyValueMapper<Windowed<K>, V, KeyValue<K, V>> {
         @Override
-        public K apply(final Windowed<K> winKey, final V value) {
-            return winKey.key();
+        public KeyValue<K, V> apply(final Windowed<K> winKey, final V value) {
+            return new KeyValue<>(winKey.key(), value);
         }
     }
 
     public static class Agg {
 
         KeyValueMapper<String, Long, KeyValue<String, Long>> selector() {
-            return (key, value) -> new KeyValue<>(value == null ? null : Long.toString(value), 1L);
+            return new KeyValueMapper<String, Long, KeyValue<String, Long>>() {
+                @Override
+                public KeyValue<String, Long> apply(final String key, final Long value) {
+                    return new KeyValue<>(value == null ? null : Long.toString(value), 1L);
+                }
+            };
         }
 
         public Initializer<Long> init() {
-            return () -> 0L;
+            return new Initializer<Long>() {
+                @Override
+                public Long apply() {
+                    return 0L;
+                }
+            };
         }
 
         Aggregator<String, Long, Long> adder() {
-            return (aggKey, value, aggregate) -> aggregate + value;
+            return new Aggregator<String, Long, Long>() {
+                @Override
+                public Long apply(final String aggKey, final Long value, final Long aggregate) {
+                    return aggregate + value;
+                }
+            };
         }
 
         Aggregator<String, Long, Long> remover() {
-            return (aggKey, value, aggregate) -> aggregate - value;
+            return new Aggregator<String, Long, Long>() {
+                @Override
+                public Long apply(final String aggKey, final Long value, final Long aggregate) {
+                    return aggregate - value;
+                }
+            };
         }
     }
 
@@ -121,6 +128,14 @@ public class SmokeTestUtil {
     static Serde<Long> longSerde = Serdes.Long();
 
     static Serde<Double> doubleSerde = Serdes.Double();
+
+    static File createDir(final File parent, final String child) {
+        final File dir = new File(parent, child);
+
+        dir.mkdir();
+
+        return dir;
+    }
 
     public static void sleep(final long duration) {
         try {

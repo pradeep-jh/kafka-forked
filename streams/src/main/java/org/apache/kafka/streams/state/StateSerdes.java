@@ -20,8 +20,6 @@ import org.apache.kafka.common.serialization.Deserializer;
 import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.serialization.Serializer;
-import org.apache.kafka.streams.errors.StreamsException;
-import org.apache.kafka.streams.state.internals.ValueAndTimestampSerializer;
 
 import java.util.Objects;
 
@@ -32,9 +30,6 @@ import java.util.Objects;
  * @param <V> value type of serde
  */
 public final class StateSerdes<K, V> {
-
-    public static final int TIMESTAMP_SIZE = 8;
-    public static final int BOOLEAN_SIZE = 1;
 
     /**
      * Create a new instance of {@link StateSerdes} for the given state name and key-/value-type classes.
@@ -149,7 +144,7 @@ public final class StateSerdes<K, V> {
      * @param rawKey  the key as raw bytes
      * @return        the key as typed object
      */
-    public K keyFrom(final byte[] rawKey) {
+    public K keyFrom(byte[] rawKey) {
         return keySerde.deserializer().deserialize(topic, rawKey);
     }
 
@@ -159,7 +154,7 @@ public final class StateSerdes<K, V> {
      * @param rawValue  the value as raw bytes
      * @return          the value as typed object
      */
-    public V valueFrom(final byte[] rawValue) {
+    public V valueFrom(byte[] rawValue) {
         return valueSerde.deserializer().deserialize(topic, rawValue);
     }
 
@@ -169,19 +164,8 @@ public final class StateSerdes<K, V> {
      * @param key  the key to be serialized
      * @return     the serialized key
      */
-    public byte[] rawKey(final K key) {
-        try {
-            return keySerde.serializer().serialize(topic, key);
-        } catch (final ClassCastException e) {
-            final String keyClass = key == null ? "unknown because key is null" : key.getClass().getName();
-            throw new StreamsException(
-                    String.format("A serializer (%s) is not compatible to the actual key type " +
-                                    "(key type: %s). Change the default Serdes in StreamConfig or " +
-                                    "provide correct Serdes via method parameters.",
-                            keySerializer().getClass().getName(),
-                            keyClass),
-                    e);
-        }
+    public byte[] rawKey(K key) {
+        return keySerde.serializer().serialize(topic, key);
     }
 
     /**
@@ -190,27 +174,7 @@ public final class StateSerdes<K, V> {
      * @param value  the value to be serialized
      * @return       the serialized value
      */
-    @SuppressWarnings("rawtypes")
-    public byte[] rawValue(final V value) {
-        try {
-            return valueSerde.serializer().serialize(topic, value);
-        } catch (final ClassCastException e) {
-            final String valueClass;
-            final Class<? extends Serializer> serializerClass;
-            if (valueSerializer() instanceof ValueAndTimestampSerializer) {
-                serializerClass = ((ValueAndTimestampSerializer<?>) valueSerializer()).valueSerializer.getClass();
-                valueClass = value == null ? "unknown because value is null" : ((ValueAndTimestamp) value).value().getClass().getName();
-            } else {
-                serializerClass = valueSerializer().getClass();
-                valueClass = value == null ? "unknown because value is null" : value.getClass().getName();
-            }
-            throw new StreamsException(
-                    String.format("A serializer (%s) is not compatible to the actual value type " +
-                                    "(value type: %s). Change the default Serdes in StreamConfig or " +
-                                    "provide correct Serdes via method parameters.",
-                            serializerClass.getName(),
-                            valueClass),
-                    e);
-        }
+    public byte[] rawValue(V value) {
+        return valueSerde.serializer().serialize(topic, value);
     }
 }

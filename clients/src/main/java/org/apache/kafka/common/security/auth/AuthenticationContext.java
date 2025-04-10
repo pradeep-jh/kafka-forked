@@ -18,11 +18,9 @@ package org.apache.kafka.common.security.auth;
 
 import java.net.InetAddress;
 
-
 /**
  * An object representing contextual information from the authentication session. See
- * {@link PlaintextAuthenticationContext}, {@link SaslAuthenticationContext}
- * and {@link SslAuthenticationContext}. This class is only used in the broker.
+ * {@link SaslAuthenticationContext} and {@link SslAuthenticationContext}.
  */
 public interface AuthenticationContext {
     /**
@@ -34,9 +32,4 @@ public interface AuthenticationContext {
      * Address of the authenticated client
      */
     InetAddress clientAddress();
-
-    /**
-     * Name of the listener used for the connection
-     */
-    String listenerName();
 }

@@ -16,59 +16,106 @@
  */
 package org.apache.kafka.test;
 
+import org.apache.kafka.streams.processor.AbstractProcessor;
+import org.apache.kafka.streams.processor.Cancellable;
+import org.apache.kafka.streams.processor.Processor;
+import org.apache.kafka.streams.processor.ProcessorContext;
+import org.apache.kafka.streams.processor.ProcessorSupplier;
 import org.apache.kafka.streams.processor.PunctuationType;
-import org.apache.kafka.streams.processor.api.Processor;
+import org.apache.kafka.streams.processor.Punctuator;
 
 import java.util.ArrayList;
-import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.Assert.assertEquals;
 
-@SuppressWarnings("deprecation") // Old PAPI. Needs to be migrated.
-public class MockProcessorSupplier<KIn, VIn, KOut, VOut> implements org.apache.kafka.streams.processor.api.ProcessorSupplier<KIn, VIn, KOut, VOut> {
+public class MockProcessorSupplier<K, V> implements ProcessorSupplier<K, V> {
+
+    public final ArrayList<String> processed = new ArrayList<>();
+    public final ArrayList<Long> punctuatedStreamTime = new ArrayList<>();
+    public final ArrayList<Long> punctuatedSystemTime = new ArrayList<>();
 
     private final long scheduleInterval;
     private final PunctuationType punctuationType;
-    private final List<MockProcessor<KIn, VIn, KOut, VOut>> processors = new ArrayList<>();
+    public Cancellable scheduleCancellable;
 
     public MockProcessorSupplier() {
         this(-1L);
     }
 
-    public MockProcessorSupplier(final long scheduleInterval) {
+    public MockProcessorSupplier(long scheduleInterval) {
         this(scheduleInterval, PunctuationType.STREAM_TIME);
     }
 
-    public MockProcessorSupplier(final long scheduleInterval, final PunctuationType punctuationType) {
+    public MockProcessorSupplier(long scheduleInterval, PunctuationType punctuationType) {
         this.scheduleInterval = scheduleInterval;
         this.punctuationType = punctuationType;
     }
 
     @Override
-    public Processor<KIn, VIn, KOut, VOut> get() {
-        final MockProcessor<KIn, VIn, KOut, VOut> processor = new MockProcessor<>(punctuationType, scheduleInterval);
+    public Processor<K, V> get() {
+        return new MockProcessor(punctuationType);
+    }
 
-        // to keep tests simple, ignore calls from ApiUtils.checkSupplier
-        if (!StreamsTestUtils.isCheckSupplierCall()) {
-            processors.add(processor);
+    public class MockProcessor extends AbstractProcessor<K, V> {
+
+        PunctuationType punctuationType;
+
+        public MockProcessor(PunctuationType punctuationType) {
+            this.punctuationType = punctuationType;
         }
 
-        return processor;
+        @Override
+        public void init(ProcessorContext context) {
+            super.init(context);
+            if (scheduleInterval > 0L) {
+                scheduleCancellable = context.schedule(scheduleInterval, punctuationType, new Punctuator() {
+                    @Override
+                    public void punctuate(long timestamp) {
+                        if (punctuationType == PunctuationType.STREAM_TIME) {
+                            assertEquals(timestamp, context().timestamp());
+                        }
+                        assertEquals(-1, context().partition());
+                        assertEquals(-1L, context().offset());
+
+                        (punctuationType == PunctuationType.STREAM_TIME ? punctuatedStreamTime : punctuatedSystemTime)
+                           .add(timestamp);
+                    }
+                });
+            }
+        }
+
+        @Override
+        public void process(K key, V value) {
+            processed.add((key == null ? "null" : key) + ":" +
+                    (value == null ? "null" : value));
+
+        }
     }
 
-    // get the captured processor assuming that only one processor gets returned from this supplier
-    public MockProcessor<KIn, VIn, KOut, VOut> theCapturedProcessor() {
-        return capturedProcessors(1).get(0);
+    public void checkAndClearProcessResult(String... expected) {
+        assertEquals("the number of outputs:" + processed, expected.length, processed.size());
+        for (int i = 0; i < expected.length; i++) {
+            assertEquals("output[" + i + "]:", expected[i], processed.get(i));
+        }
+
+        processed.clear();
     }
 
-    public int capturedProcessorsCount() {
-        return processors.size();
+    public void checkEmptyAndClearProcessResult() {
+
+        assertEquals("the number of outputs:", 0, processed.size());
+        processed.clear();
     }
 
-        // get the captured processors with the expected number
-    public List<MockProcessor<KIn, VIn, KOut, VOut>> capturedProcessors(final int expectedNumberOfProcessors) {
-        assertEquals(expectedNumberOfProcessors, processors.size());
+    public void checkAndClearPunctuateResult(PunctuationType type, long... expected) {
+        ArrayList<Long> punctuated = type == PunctuationType.STREAM_TIME ? punctuatedStreamTime : punctuatedSystemTime;
+        assertEquals("the number of outputs:", expected.length, punctuated.size());
 
-        return processors;
+        for (int i = 0; i < expected.length; i++) {
+            assertEquals("output[" + i + "]:", expected[i], (long) punctuated.get(i));
+        }
+
+        processed.clear();
     }
+
 }

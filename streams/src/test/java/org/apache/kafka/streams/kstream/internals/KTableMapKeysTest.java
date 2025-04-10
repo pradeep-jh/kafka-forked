@@ -16,64 +16,82 @@
  */
 package org.apache.kafka.streams.kstream.internals;
 
-import org.apache.kafka.common.serialization.IntegerSerializer;
+
+import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.common.serialization.Serdes;
-import org.apache.kafka.common.serialization.StringSerializer;
-import org.apache.kafka.streams.KeyValueTimestamp;
+import org.apache.kafka.streams.Consumed;
 import org.apache.kafka.streams.StreamsBuilder;
-import org.apache.kafka.streams.TestInputTopic;
-import org.apache.kafka.streams.TopologyTestDriver;
-import org.apache.kafka.streams.kstream.Consumed;
 import org.apache.kafka.streams.kstream.KStream;
 import org.apache.kafka.streams.kstream.KTable;
-import org.apache.kafka.test.MockApiProcessorSupplier;
-import org.apache.kafka.test.StreamsTestUtils;
+import org.apache.kafka.streams.kstream.KeyValueMapper;
+import org.apache.kafka.test.KStreamTestDriver;
+import org.apache.kafka.test.MockProcessorSupplier;
+import org.apache.kafka.test.TestUtils;
 
-import org.junit.jupiter.api.Test;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
 
+import java.io.File;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Properties;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.Assert.assertEquals;
 
 public class KTableMapKeysTest {
-    private final Properties props = StreamsTestUtils.getStreamsConfig(Serdes.Integer(), Serdes.String());
+
+    final private Serde<String> stringSerde = new Serdes.StringSerde();
+    final private Serde<Integer>  integerSerde = new Serdes.IntegerSerde();
+    private File stateDir = null;
+    @Rule
+    public final KStreamTestDriver driver = new KStreamTestDriver();
+
+    
+    @Before
+     public void setUp() {
+        stateDir = TestUtils.tempDirectory("kafka-test");
+    }
 
     @Test
     public void testMapKeysConvertingToStream() {
         final StreamsBuilder builder = new StreamsBuilder();
-        final String topic1 = "topic_map_keys";
 
-        final KTable<Integer, String> table1 = builder.table(topic1, Consumed.with(Serdes.Integer(), Serdes.String()));
+        String topic1 = "topic_map_keys";
+
+        KTable<Integer, String> table1 = builder.table(topic1, Consumed.with(integerSerde, stringSerde));
 
         final Map<Integer, String> keyMap = new HashMap<>();
         keyMap.put(1, "ONE");
         keyMap.put(2, "TWO");
         keyMap.put(3, "THREE");
 
-        final KStream<String, String> convertedStream = table1.toStream((key, value) -> keyMap.get(key));
-
-        final KeyValueTimestamp[] expected = new KeyValueTimestamp[] {new KeyValueTimestamp<>("ONE", "V_ONE", 5),
-            new KeyValueTimestamp<>("TWO", "V_TWO", 10),
-            new KeyValueTimestamp<>("THREE", "V_THREE", 15)};
-        final int[] originalKeys = new int[] {1, 2, 3};
-        final String[] values = new String[] {"V_ONE", "V_TWO", "V_THREE"};
-
-        final MockApiProcessorSupplier<String, String, Void, Void> supplier = new MockApiProcessorSupplier<>();
-        convertedStream.process(supplier);
-
-        try (final TopologyTestDriver driver = new TopologyTestDriver(builder.build(), props)) {
-            for (int i = 0; i < originalKeys.length; i++) {
-                final TestInputTopic<Integer, String> inputTopic =
-                        driver.createInputTopic(topic1, new IntegerSerializer(), new StringSerializer());
-                inputTopic.pipeInput(originalKeys[i], values[i], 5 + i * 5);
+        KeyValueMapper<Integer, String, String> keyMapper = new KeyValueMapper<Integer, String, String>() {
+            @Override
+            public  String apply(Integer key, String value) {
+                return keyMap.get(key);
             }
-        }
+        };
 
-        assertEquals(3, supplier.theCapturedProcessor().processed().size());
+        KStream<String, String> convertedStream = table1.toStream(keyMapper);
+
+        final String[] expected = new String[]{"ONE:V_ONE", "TWO:V_TWO", "THREE:V_THREE"};
+        final int[] originalKeys = new int[]{1, 2, 3};
+        final String[] values = new String[]{"V_ONE", "V_TWO", "V_THREE"};
+
+        MockProcessorSupplier<String, String> processor = new MockProcessorSupplier<>();
+
+        convertedStream.process(processor);
+
+        driver.setUp(builder, stateDir);
+        for (int i = 0;  i < originalKeys.length; i++) {
+            driver.process(topic1, originalKeys[i], values[i]);
+        }
+        driver.flushState();
+
+        assertEquals(3, processor.processed.size());
+
         for (int i = 0; i < expected.length; i++) {
-            assertEquals(expected[i], supplier.theCapturedProcessor().processed().get(i));
+            assertEquals(expected[i], processor.processed.get(i));
         }
     }
 }

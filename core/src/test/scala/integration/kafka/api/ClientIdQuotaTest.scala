@@ -14,64 +14,46 @@
 
 package kafka.api
 
-import kafka.server.KafkaBroker
+import java.util.Properties
+
+import kafka.admin.AdminUtils
+import kafka.server.{DynamicConfig, KafkaConfig, QuotaId}
 import org.apache.kafka.common.security.auth.KafkaPrincipal
-import org.junit.jupiter.api.{BeforeEach, TestInfo}
+import org.apache.kafka.common.utils.Sanitizer
+import org.junit.Before
 
 class ClientIdQuotaTest extends BaseQuotaTest {
 
+  override val userPrincipal = KafkaPrincipal.ANONYMOUS.getName
   override def producerClientId = "QuotasTestProducer-!@#$%^&*()"
   override def consumerClientId = "QuotasTestConsumer-!@#$%^&*()"
+  override val producerQuotaId = QuotaId(None, Some(producerClientId), Some(Sanitizer.sanitize(producerClientId)))
+  override val consumerQuotaId = QuotaId(None, Some(consumerClientId), Some(Sanitizer.sanitize(consumerClientId)))
 
-  @BeforeEach
-  override def setUp(testInfo: TestInfo): Unit = {
-    super.setUp(testInfo)
-    quotaTestClients.alterClientQuotas(
-      quotaTestClients.clientQuotaAlteration(
-        quotaTestClients.clientQuotaEntity(None, Some(QuotaTestClients.DefaultEntity)),
-        Some(defaultProducerQuota), Some(defaultConsumerQuota), Some(defaultRequestQuota)
-      )
-    )
-    quotaTestClients.waitForQuotaUpdate(defaultProducerQuota, defaultConsumerQuota, defaultRequestQuota)
+  @Before
+  override def setUp() {
+    this.serverConfig.setProperty(KafkaConfig.ProducerQuotaBytesPerSecondDefaultProp, defaultProducerQuota.toString)
+    this.serverConfig.setProperty(KafkaConfig.ConsumerQuotaBytesPerSecondDefaultProp, defaultConsumerQuota.toString)
+    super.setUp()
+  }
+  override def overrideQuotas(producerQuota: Long, consumerQuota: Long, requestQuota: Double) {
+    val producerProps = new Properties()
+    producerProps.put(DynamicConfig.Client.ProducerByteRateOverrideProp, producerQuota.toString)
+    producerProps.put(DynamicConfig.Client.RequestPercentageOverrideProp, requestQuota.toString)
+    updateQuotaOverride(producerClientId, producerProps)
+
+    val consumerProps = new Properties()
+    consumerProps.put(DynamicConfig.Client.ConsumerByteRateOverrideProp, consumerQuota.toString)
+    consumerProps.put(DynamicConfig.Client.RequestPercentageOverrideProp, requestQuota.toString)
+    updateQuotaOverride(consumerClientId, consumerProps)
+  }
+  override def removeQuotaOverrides() {
+    val emptyProps = new Properties
+    updateQuotaOverride(producerClientId, emptyProps)
+    updateQuotaOverride(consumerClientId, emptyProps)
   }
 
-  override def createQuotaTestClients(topic: String, leaderNode: KafkaBroker): QuotaTestClients = {
-    val producer = createProducer()
-    val consumer = createConsumer()
-    val adminClient = createAdminClient()
-
-    new QuotaTestClients(topic, leaderNode, producerClientId, consumerClientId, producer, consumer, adminClient) {
-      override def userPrincipal: KafkaPrincipal = KafkaPrincipal.ANONYMOUS
-
-      override def quotaMetricTags(clientId: String): Map[String, String] = {
-        Map("user" -> "", "client-id" -> clientId)
-      }
-
-      override def overrideQuotas(producerQuota: Long, consumerQuota: Long, requestQuota: Double): Unit = {
-        alterClientQuotas(
-          clientQuotaAlteration(
-            clientQuotaEntity(None, Some(producerClientId)),
-            Some(producerQuota), None, Some(requestQuota)
-          ),
-          clientQuotaAlteration(
-            clientQuotaEntity(None, Some(consumerClientId)),
-            None, Some(consumerQuota), Some(requestQuota)
-          )
-        )
-      }
-
-      override def removeQuotaOverrides(): Unit = {
-        alterClientQuotas(
-          clientQuotaAlteration(
-            clientQuotaEntity(None, Some(producerClientId)),
-            None, None, None
-          ),
-          clientQuotaAlteration(
-            clientQuotaEntity(None, Some(consumerClientId)),
-            None, None, None
-          )
-        )
-      }
-    }
+  private def updateQuotaOverride(clientId: String, properties: Properties) {
+    AdminUtils.changeClientIdConfig(zkUtils, Sanitizer.sanitize(clientId), properties)
   }
 }

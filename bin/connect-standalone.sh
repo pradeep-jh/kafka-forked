@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Licensed to the Apache Software Foundation (ASF) under one or more
 # contributor license agreements.  See the NOTICE file distributed with
 # this work for additional information regarding copyright ownership.
@@ -16,18 +16,14 @@
 
 if [ $# -lt 1 ];
 then
-        echo "USAGE: $0 [-daemon] connect-standalone.properties [connector1.properties connector2.json ...]"
+        echo "USAGE: $0 [-daemon] connect-standalone.properties"
         exit 1
 fi
 
 base_dir=$(dirname $0)
 
-if [ -z "$KAFKA_LOG4J_OPTS" ]; then
-    export KAFKA_LOG4J_OPTS="-Dlog4j2.configurationFile=$base_dir/../config/connect-log4j2.yaml"
-fi
-
-if [ "x$KAFKA_HEAP_OPTS" = "x" ]; then
-  export KAFKA_HEAP_OPTS="-Xms256M -Xmx2G"
+if [ "x$KAFKA_LOG4J_OPTS" = "x" ]; then
+    export KAFKA_LOG4J_OPTS="-Dlog4j.configuration=file:$base_dir/../config/connect-log4j.properties"
 fi
 
 EXTRA_ARGS=${EXTRA_ARGS-'-name connectStandalone'}

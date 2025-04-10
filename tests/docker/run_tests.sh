@@ -18,30 +18,13 @@
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 KAFKA_NUM_CONTAINERS=${KAFKA_NUM_CONTAINERS:-14}
 TC_PATHS=${TC_PATHS:-./kafkatest/}
-REBUILD=${REBUILD:f}
 
 die() {
     echo $@
     exit 1
 }
 
-if [[ "$_DUCKTAPE_OPTIONS" == *"kafka_mode"* && "$_DUCKTAPE_OPTIONS" == *"native"* ]]; then
-    export KAFKA_MODE="native"
-else
-    export KAFKA_MODE="jvm"
-fi
-
-if [ "$REBUILD" == "t" ]; then
-    ./gradlew clean systemTestLibs
-    if [ "$KAFKA_MODE" == "native" ]; then
-        ./gradlew clean releaseTarGz
-    fi
-fi
-
 if ${SCRIPT_DIR}/ducker-ak ssh | grep -q '(none)'; then
-    ${SCRIPT_DIR}/ducker-ak up -n "${KAFKA_NUM_CONTAINERS}" -m "${KAFKA_MODE}" || die "ducker-ak up failed"
+    ${SCRIPT_DIR}/ducker-ak up -n "${KAFKA_NUM_CONTAINERS}" || die "ducker-ak up failed"
 fi
-
-[[ -n ${_DUCKTAPE_OPTIONS} ]] && _DUCKTAPE_OPTIONS="-- ${_DUCKTAPE_OPTIONS}"
-
 ${SCRIPT_DIR}/ducker-ak test ${TC_PATHS} ${_DUCKTAPE_OPTIONS} || die "ducker-ak test failed"

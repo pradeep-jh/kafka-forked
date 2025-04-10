@@ -16,23 +16,18 @@
  */
 package org.apache.kafka.common.record;
 
-import org.apache.kafka.common.compress.Compression;
 import org.apache.kafka.common.record.FileLogInputStream.FileChannelRecordBatch;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.test.TestUtils;
-
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtensionContext;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.Arguments;
-import org.junit.jupiter.params.provider.ArgumentsProvider;
-import org.junit.jupiter.params.provider.ArgumentsSource;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
-import java.util.stream.Stream;
 
 import static java.util.Arrays.asList;
 import static org.apache.kafka.common.record.RecordBatch.MAGIC_VALUE_V0;
@@ -42,55 +37,31 @@ import static org.apache.kafka.common.record.RecordBatch.NO_TIMESTAMP;
 import static org.apache.kafka.common.record.TimestampType.CREATE_TIME;
 import static org.apache.kafka.common.record.TimestampType.NO_TIMESTAMP_TYPE;
 import static org.apache.kafka.test.TestUtils.tempFile;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
+@RunWith(value = Parameterized.class)
 public class FileLogInputStreamTest {
 
-    private static class Args {
-        final byte magic;
-        final Compression compression;
+    private final byte magic;
+    private final CompressionType compression;
 
-        public Args(byte magic, Compression compression) {
-            this.magic = magic;
-            this.compression = compression;
-        }
-
-        @Override
-        public String toString() {
-            return "magic=" + magic +
-                ", compression=" + compression;
-        }
+    public FileLogInputStreamTest(byte magic, CompressionType compression) {
+        this.magic = magic;
+        this.compression = compression;
     }
 
-    private static class FileLogInputStreamArgumentsProvider implements ArgumentsProvider {
-
-        @Override
-        public Stream<? extends Arguments> provideArguments(ExtensionContext context) {
-            List<Arguments> arguments = new ArrayList<>();
-            for (byte magic : asList(MAGIC_VALUE_V0, MAGIC_VALUE_V1, MAGIC_VALUE_V2))
-                for (CompressionType type: CompressionType.values())
-                    arguments.add(Arguments.of(new Args(magic, Compression.of(type).build())));
-            return arguments.stream();
-        }
-    }
-
-    @ParameterizedTest
-    @ArgumentsSource(FileLogInputStreamArgumentsProvider.class)
-    public void testWriteTo(Args args) throws IOException {
-        Compression compression = args.compression;
-        byte magic = args.magic;
-        if (compression.type() == CompressionType.ZSTD && magic < MAGIC_VALUE_V2)
-            return;
-
+    @Test
+    public void testWriteTo() throws IOException {
         try (FileRecords fileRecords = FileRecords.open(tempFile())) {
             fileRecords.append(MemoryRecords.withRecords(magic, compression, new SimpleRecord("foo".getBytes())));
             fileRecords.flush();
 
-            FileLogInputStream logInputStream = new FileLogInputStream(fileRecords, 0, fileRecords.sizeInBytes());
+            FileLogInputStream logInputStream = new FileLogInputStream(fileRecords.channel(), 0,
+                    fileRecords.sizeInBytes());
 
             FileChannelRecordBatch batch = logInputStream.nextBatch();
             assertNotNull(batch);
@@ -109,14 +80,8 @@ public class FileLogInputStreamTest {
         }
     }
 
-    @ParameterizedTest
-    @ArgumentsSource(FileLogInputStreamArgumentsProvider.class)
-    public void testSimpleBatchIteration(Args args) throws IOException {
-        Compression compression = args.compression;
-        byte magic = args.magic;
-        if (compression.type() == CompressionType.ZSTD && magic < MAGIC_VALUE_V2)
-            return;
-
+    @Test
+    public void testSimpleBatchIteration() throws IOException {
         try (FileRecords fileRecords = FileRecords.open(tempFile())) {
             SimpleRecord firstBatchRecord = new SimpleRecord(3241324L, "a".getBytes(), "foo".getBytes());
             SimpleRecord secondBatchRecord = new SimpleRecord(234280L, "b".getBytes(), "bar".getBytes());
@@ -125,37 +90,32 @@ public class FileLogInputStreamTest {
             fileRecords.append(MemoryRecords.withRecords(magic, 1L, compression, CREATE_TIME, secondBatchRecord));
             fileRecords.flush();
 
-            FileLogInputStream logInputStream = new FileLogInputStream(fileRecords, 0, fileRecords.sizeInBytes());
+            FileLogInputStream logInputStream = new FileLogInputStream(fileRecords.channel(), 0,
+                    fileRecords.sizeInBytes());
 
             FileChannelRecordBatch firstBatch = logInputStream.nextBatch();
-            assertGenericRecordBatchData(args, firstBatch, 0L, 3241324L, firstBatchRecord);
+            assertGenericRecordBatchData(firstBatch, 0L, 3241324L, firstBatchRecord);
             assertNoProducerData(firstBatch);
 
             FileChannelRecordBatch secondBatch = logInputStream.nextBatch();
-            assertGenericRecordBatchData(args, secondBatch, 1L, 234280L, secondBatchRecord);
+            assertGenericRecordBatchData(secondBatch, 1L, 234280L, secondBatchRecord);
             assertNoProducerData(secondBatch);
 
             assertNull(logInputStream.nextBatch());
         }
     }
 
-    @ParameterizedTest
-    @ArgumentsSource(FileLogInputStreamArgumentsProvider.class)
-    public void testBatchIterationWithMultipleRecordsPerBatch(Args args) throws IOException {
-        Compression compression = args.compression;
-        byte magic = args.magic;
-        if (magic < MAGIC_VALUE_V2 && compression.type() == CompressionType.NONE)
-            return;
-
-        if (compression.type() == CompressionType.ZSTD && magic < MAGIC_VALUE_V2)
+    @Test
+    public void testBatchIterationWithMultipleRecordsPerBatch() throws IOException {
+        if (magic < MAGIC_VALUE_V2 && compression == CompressionType.NONE)
             return;
 
         try (FileRecords fileRecords = FileRecords.open(tempFile())) {
             SimpleRecord[] firstBatchRecords = new SimpleRecord[]{
                 new SimpleRecord(3241324L, "a".getBytes(), "1".getBytes()),
                 new SimpleRecord(234280L, "b".getBytes(), "2".getBytes())
-            };
 
+            };
             SimpleRecord[] secondBatchRecords = new SimpleRecord[]{
                 new SimpleRecord(238423489L, "c".getBytes(), "3".getBytes()),
                 new SimpleRecord(897839L, null, "4".getBytes()),
@@ -166,25 +126,23 @@ public class FileLogInputStreamTest {
             fileRecords.append(MemoryRecords.withRecords(magic, 1L, compression, CREATE_TIME, secondBatchRecords));
             fileRecords.flush();
 
-            FileLogInputStream logInputStream = new FileLogInputStream(fileRecords, 0, fileRecords.sizeInBytes());
+            FileLogInputStream logInputStream = new FileLogInputStream(fileRecords.channel(), 0,
+                    fileRecords.sizeInBytes());
 
             FileChannelRecordBatch firstBatch = logInputStream.nextBatch();
             assertNoProducerData(firstBatch);
-            assertGenericRecordBatchData(args, firstBatch, 0L, 3241324L, firstBatchRecords);
+            assertGenericRecordBatchData(firstBatch, 0L, 3241324L, firstBatchRecords);
 
             FileChannelRecordBatch secondBatch = logInputStream.nextBatch();
             assertNoProducerData(secondBatch);
-            assertGenericRecordBatchData(args, secondBatch, 1L, 238423489L, secondBatchRecords);
+            assertGenericRecordBatchData(secondBatch, 1L, 238423489L, secondBatchRecords);
 
             assertNull(logInputStream.nextBatch());
         }
     }
 
-    @ParameterizedTest
-    @ArgumentsSource(FileLogInputStreamArgumentsProvider.class)
-    public void testBatchIterationV2(Args args) throws IOException {
-        Compression compression = args.compression;
-        byte magic = args.magic;
+    @Test
+    public void testBatchIterationV2() throws IOException {
         if (magic != MAGIC_VALUE_V2)
             return;
 
@@ -197,8 +155,8 @@ public class FileLogInputStreamTest {
             SimpleRecord[] firstBatchRecords = new SimpleRecord[]{
                 new SimpleRecord(3241324L, "a".getBytes(), "1".getBytes()),
                 new SimpleRecord(234280L, "b".getBytes(), "2".getBytes())
-            };
 
+            };
             SimpleRecord[] secondBatchRecords = new SimpleRecord[]{
                 new SimpleRecord(238423489L, "c".getBytes(), "3".getBytes()),
                 new SimpleRecord(897839L, null, "4".getBytes()),
@@ -211,31 +169,26 @@ public class FileLogInputStreamTest {
                     producerEpoch, baseSequence + firstBatchRecords.length, partitionLeaderEpoch, secondBatchRecords));
             fileRecords.flush();
 
-            FileLogInputStream logInputStream = new FileLogInputStream(fileRecords, 0, fileRecords.sizeInBytes());
+            FileLogInputStream logInputStream = new FileLogInputStream(fileRecords.channel(), 0,
+                    fileRecords.sizeInBytes());
 
             FileChannelRecordBatch firstBatch = logInputStream.nextBatch();
             assertProducerData(firstBatch, producerId, producerEpoch, baseSequence, false, firstBatchRecords);
-            assertGenericRecordBatchData(args, firstBatch, 15L, 3241324L, firstBatchRecords);
+            assertGenericRecordBatchData(firstBatch, 15L, 3241324L, firstBatchRecords);
             assertEquals(partitionLeaderEpoch, firstBatch.partitionLeaderEpoch());
 
             FileChannelRecordBatch secondBatch = logInputStream.nextBatch();
             assertProducerData(secondBatch, producerId, producerEpoch, baseSequence + firstBatchRecords.length,
                     true, secondBatchRecords);
-            assertGenericRecordBatchData(args, secondBatch, 27L, 238423489L, secondBatchRecords);
+            assertGenericRecordBatchData(secondBatch, 27L, 238423489L, secondBatchRecords);
             assertEquals(partitionLeaderEpoch, secondBatch.partitionLeaderEpoch());
 
             assertNull(logInputStream.nextBatch());
         }
     }
 
-    @ParameterizedTest
-    @ArgumentsSource(FileLogInputStreamArgumentsProvider.class)
-    public void testBatchIterationIncompleteBatch(Args args) throws IOException {
-        Compression compression = args.compression;
-        byte magic = args.magic;
-        if (compression.type() == CompressionType.ZSTD && magic < MAGIC_VALUE_V2)
-            return;
-
+    @Test
+    public void testBatchIterationIncompleteBatch() throws IOException {
         try (FileRecords fileRecords = FileRecords.open(tempFile())) {
             SimpleRecord firstBatchRecord = new SimpleRecord(100L, "foo".getBytes());
             SimpleRecord secondBatchRecord = new SimpleRecord(200L, "bar".getBytes());
@@ -245,34 +198,19 @@ public class FileLogInputStreamTest {
             fileRecords.flush();
             fileRecords.truncateTo(fileRecords.sizeInBytes() - 13);
 
-            FileLogInputStream logInputStream = new FileLogInputStream(fileRecords, 0, fileRecords.sizeInBytes());
+            FileLogInputStream logInputStream = new FileLogInputStream(fileRecords.channel(), 0,
+                    fileRecords.sizeInBytes());
 
             FileChannelRecordBatch firstBatch = logInputStream.nextBatch();
             assertNoProducerData(firstBatch);
-            assertGenericRecordBatchData(args, firstBatch, 0L, 100L, firstBatchRecord);
+            assertGenericRecordBatchData(firstBatch, 0L, 100L, firstBatchRecord);
 
-            assertNull(logInputStream.nextBatch());
-        }
-    }
-
-    @Test
-    public void testNextBatchSelectionWithMaxedParams() throws IOException {
-        try (FileRecords fileRecords = FileRecords.open(tempFile())) {
-            FileLogInputStream logInputStream = new FileLogInputStream(fileRecords, Integer.MAX_VALUE, Integer.MAX_VALUE);
-            assertNull(logInputStream.nextBatch());
-        }
-    }
-
-    @Test
-    public void testNextBatchSelectionWithZeroedParams() throws IOException {
-        try (FileRecords fileRecords = FileRecords.open(tempFile())) {
-            FileLogInputStream logInputStream = new FileLogInputStream(fileRecords, 0, 0);
             assertNull(logInputStream.nextBatch());
         }
     }
 
     private void assertProducerData(RecordBatch batch, long producerId, short producerEpoch, int baseSequence,
-                                    boolean isTransactional, SimpleRecord... records) {
+                                    boolean isTransactional, SimpleRecord ... records) {
         assertEquals(producerId, batch.producerId());
         assertEquals(producerEpoch, batch.producerEpoch());
         assertEquals(baseSequence, batch.baseSequence());
@@ -288,12 +226,9 @@ public class FileLogInputStreamTest {
         assertFalse(batch.isTransactional());
     }
 
-    private void assertGenericRecordBatchData(Args args, RecordBatch batch, long baseOffset, long maxTimestamp,
-                                              SimpleRecord... records) {
-        Compression compression = args.compression;
-        byte magic = args.magic;
+    private void assertGenericRecordBatchData(RecordBatch batch, long baseOffset, long maxTimestamp, SimpleRecord ... records) {
         assertEquals(magic, batch.magic());
-        assertEquals(compression.type(), batch.compressionType());
+        assertEquals(compression, batch.compressionType());
 
         if (magic == MAGIC_VALUE_V0) {
             assertEquals(NO_TIMESTAMP_TYPE, batch.timestampType());
@@ -319,5 +254,14 @@ public class FileLogInputStreamTest {
             else
                 assertEquals(records[i].timestamp(), batchRecords.get(i).timestamp());
         }
+    }
+
+    @Parameterized.Parameters(name = "magic={0}, compression={1}")
+    public static Collection<Object[]> data() {
+        List<Object[]> values = new ArrayList<>();
+        for (byte magic : asList(MAGIC_VALUE_V0, MAGIC_VALUE_V1, MAGIC_VALUE_V2))
+            for (CompressionType type: CompressionType.values())
+                values.add(new Object[] {magic, type});
+        return values;
     }
 }

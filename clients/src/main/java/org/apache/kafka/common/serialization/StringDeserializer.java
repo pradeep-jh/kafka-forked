@@ -17,22 +17,16 @@
 package org.apache.kafka.common.serialization;
 
 import org.apache.kafka.common.errors.SerializationException;
-import org.apache.kafka.common.header.Headers;
-import org.apache.kafka.common.utils.Utils;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
-import java.nio.charset.IllegalCharsetNameException;
-import java.nio.charset.StandardCharsets;
-import java.nio.charset.UnsupportedCharsetException;
+import java.io.UnsupportedEncodingException;
 import java.util.Map;
 
 /**
- * String encoding defaults to UTF8 and can be customized by setting the property key.deserializer.encoding,
- * value.deserializer.encoding or deserializer.encoding. The first two take precedence over the last.
+ *  String encoding defaults to UTF8 and can be customized by setting the property key.deserializer.encoding,
+ *  value.deserializer.encoding or deserializer.encoding. The first two take precedence over the last.
  */
 public class StringDeserializer implements Deserializer<String> {
-    private Charset encoding = StandardCharsets.UTF_8;
+    private String encoding = "UTF8";
 
     @Override
     public void configure(Map<String, ?> configs, boolean isKey) {
@@ -40,33 +34,24 @@ public class StringDeserializer implements Deserializer<String> {
         Object encodingValue = configs.get(propertyName);
         if (encodingValue == null)
             encodingValue = configs.get("deserializer.encoding");
-        if (encodingValue instanceof String) {
-            String encodingName = (String) encodingValue;
-            try {
-                encoding = Charset.forName(encodingName);
-            } catch (UnsupportedCharsetException | IllegalCharsetNameException e) {
-                throw new SerializationException("Unsupported encoding " + encodingName, e);
-            }
-        }
+        if (encodingValue != null && encodingValue instanceof String)
+            encoding = (String) encodingValue;
     }
 
     @Override
     public String deserialize(String topic, byte[] data) {
-        if (data == null)
-            return null;
-        else
-            return new String(data, encoding);
+        try {
+            if (data == null)
+                return null;
+            else
+                return new String(data, encoding);
+        } catch (UnsupportedEncodingException e) {
+            throw new SerializationException("Error when deserializing byte[] to string due to unsupported encoding " + encoding);
+        }
     }
 
     @Override
-    public String deserialize(String topic, Headers headers, ByteBuffer data) {
-        if (data == null) {
-            return null;
-        }
-
-        if (data.hasArray()) {
-            return new String(data.array(), data.position() + data.arrayOffset(), data.remaining(), encoding);
-        }
-        return new String(Utils.toArray(data), encoding);
+    public void close() {
+        // nothing to do
     }
 }

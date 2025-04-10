@@ -16,17 +16,16 @@
  */
 package org.apache.kafka.common.metrics.stats;
 
-import org.apache.kafka.common.MetricName;
-import org.apache.kafka.common.metrics.CompoundStat.NamedMeasurable;
-import org.apache.kafka.common.metrics.MetricConfig;
-
-import org.junit.jupiter.api.Test;
+import static org.junit.Assert.assertEquals;
 
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import org.apache.kafka.common.MetricName;
+import org.apache.kafka.common.metrics.CompoundStat.NamedMeasurable;
+import org.apache.kafka.common.metrics.MetricConfig;
+import org.junit.Test;
 
 public class MeterTest {
 
@@ -45,13 +44,13 @@ public class MeterTest {
         assertEquals(rateMetricName, rate.name());
         assertEquals(totalMetricName, total.name());
         Rate rateStat = (Rate) rate.stat();
-        CumulativeSum totalStat = (CumulativeSum) total.stat();
+        Total totalStat = (Total) total.stat();
 
         MetricConfig config = new MetricConfig();
         double nextValue = 0.0;
         double expectedTotal = 0.0;
         long now = 0;
-        int intervalMs = 100;
+        double intervalMs = 100;
         double delta = 5.0;
 
         // Record values in multiple windows and verify that rates are reported

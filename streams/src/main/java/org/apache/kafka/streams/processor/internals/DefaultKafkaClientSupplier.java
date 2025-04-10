@@ -16,7 +16,8 @@
  */
 package org.apache.kafka.streams.processor.internals;
 
-import org.apache.kafka.clients.admin.Admin;
+import java.util.Map;
+
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
@@ -25,32 +26,19 @@ import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.streams.KafkaClientSupplier;
 
-import java.util.Map;
-
 public class DefaultKafkaClientSupplier implements KafkaClientSupplier {
     @Override
-    public Admin getAdmin(final Map<String, Object> config) {
-        // create a new client upon each call; but expect this call to be only triggered once so this should be fine
-        return Admin.create(config);
-    }
-
-    @Override
-    public Producer<byte[], byte[]> getProducer(final Map<String, Object> config) {
+    public Producer<byte[], byte[]> getProducer(Map<String, Object> config) {
         return new KafkaProducer<>(config, new ByteArraySerializer(), new ByteArraySerializer());
     }
 
     @Override
-    public Consumer<byte[], byte[]> getConsumer(final Map<String, Object> config) {
+    public Consumer<byte[], byte[]> getConsumer(Map<String, Object> config) {
         return new KafkaConsumer<>(config, new ByteArrayDeserializer(), new ByteArrayDeserializer());
     }
 
     @Override
-    public Consumer<byte[], byte[]> getRestoreConsumer(final Map<String, Object> config) {
-        return new KafkaConsumer<>(config, new ByteArrayDeserializer(), new ByteArrayDeserializer());
-    }
-
-    @Override
-    public Consumer<byte[], byte[]> getGlobalConsumer(final Map<String, Object> config) {
+    public Consumer<byte[], byte[]> getRestoreConsumer(Map<String, Object> config) {
         return new KafkaConsumer<>(config, new ByteArrayDeserializer(), new ByteArrayDeserializer());
     }
 }

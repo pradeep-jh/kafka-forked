@@ -16,115 +16,73 @@
  */
 package org.apache.kafka.common.security.authenticator;
 
-import org.apache.kafka.common.config.ConfigException;
-import org.apache.kafka.common.config.SaslConfigs;
-import org.apache.kafka.common.config.types.Password;
-import org.apache.kafka.common.network.ListenerName;
-import org.apache.kafka.common.security.JaasContext;
-import org.apache.kafka.common.security.auth.AuthenticateCallbackHandler;
-import org.apache.kafka.common.security.auth.Login;
-import org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule;
-import org.apache.kafka.common.security.oauthbearer.internals.unsecured.OAuthBearerUnsecuredLoginCallbackHandler;
-import org.apache.kafka.common.utils.SecurityUtils;
-import org.apache.kafka.common.utils.Utils;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.concurrent.Callable;
-
 import javax.security.auth.Subject;
 import javax.security.auth.login.LoginException;
 
-import static java.util.Arrays.asList;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
+
+import org.apache.kafka.common.config.SaslConfigs;
+import org.apache.kafka.common.config.types.Password;
+import org.apache.kafka.common.security.JaasContext;
+import org.apache.kafka.common.security.kerberos.KerberosLogin;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class LoginManager {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(LoginManager.class);
 
     // static configs (broker or client)
-    private static final Map<LoginMetadata<String>, LoginManager> STATIC_INSTANCES = new HashMap<>();
+    private static final Map<String, LoginManager> STATIC_INSTANCES = new HashMap<>();
 
-    // dynamic configs (broker or client)
-    private static final Map<LoginMetadata<Password>, LoginManager> DYNAMIC_INSTANCES = new HashMap<>();
+    // dynamic configs (client-only)
+    private static final Map<Password, LoginManager> DYNAMIC_INSTANCES = new HashMap<>();
 
     private final Login login;
-    private final LoginMetadata<?> loginMetadata;
-    private final AuthenticateCallbackHandler loginCallbackHandler;
+    private final Object cacheKey;
     private int refCount;
 
-    private LoginManager(JaasContext jaasContext, String saslMechanism, Map<String, ?> configs,
-                 LoginMetadata<?> loginMetadata) throws LoginException {
-        this.loginMetadata = loginMetadata;
-        this.login = Utils.newInstance(loginMetadata.loginClass);
-        loginCallbackHandler = Utils.newInstance(loginMetadata.loginCallbackClass);
-        try {
-            loginCallbackHandler.configure(configs, saslMechanism, jaasContext.configurationEntries());
-            login.configure(configs, jaasContext.name(), jaasContext.configuration(), loginCallbackHandler);
-            login.login();
-        } catch (Exception e) {
-            closeResources();
-            throw e;
-        }
+    private LoginManager(JaasContext jaasContext, boolean hasKerberos, Map<String, ?> configs,
+                         Password jaasConfigValue) throws IOException, LoginException {
+        this.cacheKey = jaasConfigValue != null ? jaasConfigValue : jaasContext.name();
+        login = hasKerberos ? new KerberosLogin() : new DefaultLogin();
+        login.configure(configs, jaasContext);
+        login.login();
     }
 
     /**
      * Returns an instance of `LoginManager` and increases its reference count.
      *
      * `release()` should be invoked when the `LoginManager` is no longer needed. This method will try to reuse an
-     * existing `LoginManager` for the provided context type. If `jaasContext` was loaded from a dynamic config,
-     * login managers are reused for the same dynamic config value. For `jaasContext` loaded from static JAAS
-     * configuration, login managers are reused for static contexts with the same login context name.
+     * existing `LoginManager` for the provided context type and `SaslConfigs.SASL_JAAS_CONFIG` in `configs`,
+     * if available.
      *
      * This is a bit ugly and it would be nicer if we could pass the `LoginManager` to `ChannelBuilders.create` and
      * shut it down when the broker or clients are closed. It's straightforward to do the former, but it's more
      * complicated to do the latter without making the consumer API more complex.
-     *
-     * @param jaasContext Static or dynamic JAAS context. `jaasContext.dynamicJaasConfig()` is non-null for dynamic context.
-     *                    For static contexts, this may contain multiple login modules if the context type is SERVER.
-     *                    For CLIENT static contexts and dynamic contexts of CLIENT and SERVER, `jaasContext` contains
-     *                    only one login module.
-     * @param saslMechanism SASL mechanism for which login manager is being acquired. For dynamic contexts, the single
-     *                      login module in `jaasContext` corresponds to this SASL mechanism. Hence `Login` class is
-     *                      chosen based on this mechanism.
-     * @param defaultLoginClass Default login class to use if an override is not specified in `configs`
-     * @param configs Config options used to configure `Login` if a new login manager is created.
-     *
      */
-    public static LoginManager acquireLoginManager(JaasContext jaasContext, String saslMechanism,
-                                                   Class<? extends Login> defaultLoginClass,
-                                                   Map<String, ?> configs) throws LoginException {
-        Class<? extends Login> loginClass = configuredClassOrDefault(configs, jaasContext,
-                saslMechanism, SaslConfigs.SASL_LOGIN_CLASS, defaultLoginClass);
-        Class<? extends AuthenticateCallbackHandler> defaultLoginCallbackHandlerClass = OAuthBearerLoginModule.OAUTHBEARER_MECHANISM
-                .equals(saslMechanism) ? OAuthBearerUnsecuredLoginCallbackHandler.class
-                        : AbstractLogin.DefaultLoginCallbackHandler.class;
-        Class<? extends AuthenticateCallbackHandler> loginCallbackClass = configuredClassOrDefault(configs, jaasContext,
-                saslMechanism, SaslConfigs.SASL_LOGIN_CALLBACK_HANDLER_CLASS, defaultLoginCallbackHandlerClass);
+    public static LoginManager acquireLoginManager(JaasContext jaasContext, boolean hasKerberos,
+                                                   Map<String, ?> configs) throws IOException, LoginException {
         synchronized (LoginManager.class) {
+            // SASL_JAAS_CONFIG is only supported by clients
             LoginManager loginManager;
-            Password jaasConfigValue = jaasContext.dynamicJaasConfig();
-            if (jaasConfigValue != null) {
-                LoginMetadata<Password> loginMetadata = new LoginMetadata<>(jaasConfigValue, loginClass, loginCallbackClass, configs);
-                loginManager = DYNAMIC_INSTANCES.get(loginMetadata);
+            Password jaasConfigValue = (Password) configs.get(SaslConfigs.SASL_JAAS_CONFIG);
+            if (jaasContext.type() == JaasContext.Type.CLIENT && jaasConfigValue != null) {
+                loginManager = DYNAMIC_INSTANCES.get(jaasConfigValue);
                 if (loginManager == null) {
-                    loginManager = new LoginManager(jaasContext, saslMechanism, configs, loginMetadata);
-                    DYNAMIC_INSTANCES.put(loginMetadata, loginManager);
+                    loginManager = new LoginManager(jaasContext, hasKerberos, configs, jaasConfigValue);
+                    DYNAMIC_INSTANCES.put(jaasConfigValue, loginManager);
                 }
             } else {
-                LoginMetadata<String> loginMetadata = new LoginMetadata<>(jaasContext.name(), loginClass, loginCallbackClass, configs);
-                loginManager = STATIC_INSTANCES.get(loginMetadata);
+                loginManager = STATIC_INSTANCES.get(jaasContext.name());
                 if (loginManager == null) {
-                    loginManager = new LoginManager(jaasContext, saslMechanism, configs, loginMetadata);
-                    STATIC_INSTANCES.put(loginMetadata, loginManager);
+                    loginManager = new LoginManager(jaasContext, hasKerberos, configs, jaasConfigValue);
+                    STATIC_INSTANCES.put(jaasContext.name(), loginManager);
                 }
             }
-            SecurityUtils.addConfiguredSecurityProviders(configs);
             return loginManager.acquire();
         }
     }
@@ -135,11 +93,6 @@ public class LoginManager {
 
     public String serviceName() {
         return login.serviceName();
-    }
-
-    // Only for testing
-    Object cacheKey() {
-        return loginMetadata.configInfo;
     }
 
     private LoginManager acquire() {
@@ -156,13 +109,12 @@ public class LoginManager {
             if (refCount == 0)
                 throw new IllegalStateException("release() called on disposed " + this);
             else if (refCount == 1) {
-                if (loginMetadata.configInfo instanceof Password) {
-                    DYNAMIC_INSTANCES.remove(loginMetadata);
+                if (cacheKey instanceof Password) {
+                    DYNAMIC_INSTANCES.remove(cacheKey);
                 } else {
-                    STATIC_INSTANCES.remove(loginMetadata);
+                    STATIC_INSTANCES.remove(cacheKey);
                 }
                 login.close();
-                loginCallbackHandler.close();
             }
             --refCount;
             LOGGER.trace("{} released", this);
@@ -177,89 +129,13 @@ public class LoginManager {
                 ", refCount=" + refCount + ')';
     }
 
-    /**
-     * Closes Login and AuthenticateCallbackHandler quietly.
-     * The function logs exceptions that are thrown during closing.
-     */
-    private void closeResources() {
-        try {
-            List<Callable<Void>> tasks = asList(
-                    () -> {
-                        login.close();
-                        return null;
-                    },
-                    () -> {
-                        loginCallbackHandler.close();
-                        return null;
-                    }
-            );
-            Utils.tryAll(tasks);
-        } catch (Throwable t) {
-            LOGGER.info("Exception thrown during closing", t);
-        }
-    }
-
     /* Should only be used in tests. */
     public static void closeAll() {
         synchronized (LoginManager.class) {
-            for (LoginMetadata<String> key : new ArrayList<>(STATIC_INSTANCES.keySet()))
+            for (String key : new ArrayList<>(STATIC_INSTANCES.keySet()))
                 STATIC_INSTANCES.remove(key).login.close();
-            for (LoginMetadata<Password> key : new ArrayList<>(DYNAMIC_INSTANCES.keySet()))
+            for (Password key : new ArrayList<>(DYNAMIC_INSTANCES.keySet()))
                 DYNAMIC_INSTANCES.remove(key).login.close();
-        }
-    }
-
-    private static <T> Class<? extends T> configuredClassOrDefault(Map<String, ?> configs,
-                                                     JaasContext jaasContext,
-                                                     String saslMechanism,
-                                                     String configName,
-                                                     Class<? extends T> defaultClass) {
-        String prefix  = jaasContext.type() == JaasContext.Type.SERVER ? ListenerName.saslMechanismPrefix(saslMechanism) : "";
-        @SuppressWarnings("unchecked")
-        Class<? extends T> clazz = (Class<? extends T>) configs.get(prefix + configName);
-        if (clazz != null && jaasContext.configurationEntries().size() != 1) {
-            String errorMessage = configName + " cannot be specified with multiple login modules in the JAAS context. " +
-                    SaslConfigs.SASL_JAAS_CONFIG + " must be configured to override mechanism-specific configs.";
-            throw new ConfigException(errorMessage);
-        }
-        if (clazz == null)
-            clazz = defaultClass;
-        return clazz;
-    }
-
-    private static class LoginMetadata<T> {
-        final T configInfo;
-        final Class<? extends Login> loginClass;
-        final Class<? extends AuthenticateCallbackHandler> loginCallbackClass;
-        final Map<String, Object> saslConfigs;
-
-        LoginMetadata(T configInfo, Class<? extends Login> loginClass,
-                      Class<? extends AuthenticateCallbackHandler> loginCallbackClass,
-                      Map<String, ?> configs) {
-            this.configInfo = configInfo;
-            this.loginClass = loginClass;
-            this.loginCallbackClass = loginCallbackClass;
-            this.saslConfigs = new HashMap<>();
-            configs.entrySet().stream()
-                    .filter(e -> e.getKey().startsWith("sasl."))
-                    .forEach(e -> saslConfigs.put(e.getKey(), e.getValue())); // value may be null
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(configInfo, loginClass, loginCallbackClass, saslConfigs);
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (o == null || getClass() != o.getClass()) return false;
-
-            LoginMetadata<?> loginMetadata = (LoginMetadata<?>) o;
-            return Objects.equals(configInfo, loginMetadata.configInfo) &&
-                   Objects.equals(loginClass, loginMetadata.loginClass) &&
-                   Objects.equals(loginCallbackClass, loginMetadata.loginCallbackClass) &&
-                   Objects.equals(saslConfigs, loginMetadata.saslConfigs);
         }
     }
 }

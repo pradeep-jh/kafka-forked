@@ -16,43 +16,41 @@
  */
 package org.apache.kafka.streams.kstream.internals;
 
-import org.apache.kafka.common.serialization.Deserializer;
 import org.apache.kafka.common.serialization.Serde;
-import org.apache.kafka.streams.internals.AutoOffsetResetInternal;
-import org.apache.kafka.streams.kstream.Consumed;
+import org.apache.kafka.streams.Consumed;
+import org.apache.kafka.streams.Topology;
 import org.apache.kafka.streams.processor.TimestampExtractor;
 
 public class ConsumedInternal<K, V> extends Consumed<K, V> {
-
     public ConsumedInternal(final Consumed<K, V> consumed) {
         super(consumed);
+    }
+
+
+    public ConsumedInternal(final Serde<K> keySerde,
+                            final Serde<V> valSerde,
+                            final TimestampExtractor timestampExtractor,
+                            final Topology.AutoOffsetReset offsetReset) {
+        this(Consumed.with(keySerde, valSerde, timestampExtractor, offsetReset));
+    }
+
+    public ConsumedInternal() {
+        this(Consumed.<K, V>with(null, null));
     }
 
     public Serde<K> keySerde() {
         return keySerde;
     }
 
-    public Deserializer<K> keyDeserializer() {
-        return keySerde == null ? null : keySerde.deserializer();
-    }
-
     public Serde<V> valueSerde() {
         return valueSerde;
-    }
-
-    public Deserializer<V> valueDeserializer() {
-        return valueSerde == null ? null : valueSerde.deserializer();
     }
 
     public TimestampExtractor timestampExtractor() {
         return timestampExtractor;
     }
 
-    public AutoOffsetResetInternal offsetResetPolicy() {
-        return resetPolicy == null ? null : new AutoOffsetResetInternal(resetPolicy);
-    }
-
-    public String name() {
-        return processorName;
+    public Topology.AutoOffsetReset offsetResetPolicy() {
+        return resetPolicy;
     }
 }

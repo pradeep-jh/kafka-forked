@@ -17,130 +17,81 @@
 package org.apache.kafka.streams.state.internals;
 
 import org.apache.kafka.streams.errors.InvalidStateStoreException;
+import org.apache.kafka.streams.processor.ProcessorContext;
 import org.apache.kafka.streams.processor.StateStore;
-import org.apache.kafka.streams.processor.StateStoreContext;
-import org.apache.kafka.streams.query.Position;
-import org.apache.kafka.streams.query.PositionBound;
-import org.apache.kafka.streams.query.Query;
-import org.apache.kafka.streams.query.QueryConfig;
-import org.apache.kafka.streams.query.QueryResult;
-import org.apache.kafka.streams.state.TimestampedBytesStore;
-import org.apache.kafka.streams.state.VersionedBytesStore;
 
 /**
  * A storage engine wrapper for utilities like logging, caching, and metering.
  */
-public abstract class WrappedStateStore<S extends StateStore, K, V> implements StateStore, CachedStateStore<K, V> {
+public interface WrappedStateStore extends StateStore {
 
-    public static boolean isTimestamped(final StateStore stateStore) {
-        if (stateStore instanceof TimestampedBytesStore) {
-            return true;
-        } else if (stateStore instanceof WrappedStateStore) {
-            return isTimestamped(((WrappedStateStore<?, ?, ?>) stateStore).wrapped());
-        } else {
-            return false;
+    /**
+     * Return the inner most storage engine
+     *
+     * @return wrapped inner storage engine
+     */
+    StateStore inner();
+
+    /**
+     * Return the state store this store directly wraps
+     * @return
+     */
+    StateStore wrappedStore();
+
+    abstract class AbstractStateStore implements WrappedStateStore {
+        final StateStore innerState;
+
+        AbstractStateStore(StateStore inner) {
+            this.innerState = inner;
         }
-    }
 
-    public static boolean isVersioned(final StateStore stateStore) {
-        if (stateStore instanceof VersionedBytesStore) {
-            return true;
-        } else if (stateStore instanceof WrappedStateStore) {
-            return isVersioned(((WrappedStateStore<?, ?, ?>) stateStore).wrapped());
-        } else {
-            return false;
+        @Override
+        public void init(ProcessorContext context, StateStore root) {
+            innerState.init(context, root);
         }
-    }
 
-    private final S wrapped;
-
-    public WrappedStateStore(final S wrapped) {
-        this.wrapped = wrapped;
-    }
-
-    @Override
-    public void init(final StateStoreContext stateStoreContext, final StateStore root) {
-        wrapped.init(stateStoreContext, root);
-    }
-
-    @SuppressWarnings("unchecked")
-    @Override
-    public boolean setFlushListener(final CacheFlushListener<K, V> listener,
-                                    final boolean sendOldValues) {
-        if (wrapped instanceof CachedStateStore) {
-            return ((CachedStateStore<K, V>) wrapped).setFlushListener(listener, sendOldValues);
+        @Override
+        public String name() {
+            return innerState.name();
         }
-        return false;
-    }
 
-    @Override
-    public void flushCache() {
-        if (wrapped instanceof CachedStateStore) {
-            ((CachedStateStore<?, ?>) wrapped).flushCache();
+        @Override
+        public boolean persistent() {
+            return innerState.persistent();
         }
-    }
 
-    @Override
-    public void clearCache() {
-        if (wrapped instanceof CachedStateStore) {
-            ((CachedStateStore<?, ?>) wrapped).clearCache();
+        @Override
+        public boolean isOpen() {
+            return innerState.isOpen();
         }
-    }
 
-
-    @Override
-    public String name() {
-        return wrapped.name();
-    }
-
-    @Override
-    public boolean persistent() {
-        return wrapped.persistent();
-    }
-
-    @Override
-    public boolean isOpen() {
-        return wrapped.isOpen();
-    }
-
-    void validateStoreOpen() {
-        if (!wrapped.isOpen()) {
-            throw new InvalidStateStoreException("Store " + wrapped.name() + " is currently closed.");
+        void validateStoreOpen() {
+            if (!innerState.isOpen()) {
+                throw new InvalidStateStoreException("Store " + innerState.name() + " is currently closed.");
+            }
         }
-    }
 
-    @Override
-    public void flush() {
-        wrapped.flush();
-    }
-
-    @Override
-    public void close() {
-        wrapped.close();
-    }
-
-    @Override
-    public <R> QueryResult<R> query(final Query<R> query,
-        final PositionBound positionBound,
-        final QueryConfig config) {
-
-        final long start = config.isCollectExecutionInfo() ? System.nanoTime() : -1L;
-        final QueryResult<R> result = wrapped().query(query, positionBound, config);
-        if (config.isCollectExecutionInfo()) {
-            final long end = System.nanoTime();
-            result.addExecutionInfo(
-                "Handled in " + getClass() + " via WrappedStateStore" + " in " + (end - start)
-                    + "ns");
+        @Override
+        public StateStore inner() {
+            if (innerState instanceof WrappedStateStore) {
+                return ((WrappedStateStore) innerState).inner();
+            }
+            return innerState;
         }
-        return result;
-    }
 
-    @Override
-    public Position getPosition() {
-        return wrapped.getPosition();
-    }
+        @Override
+        public void flush() {
+            innerState.flush();
+        }
 
-    public S wrapped() {
-        return wrapped;
+        @Override
+        public void close() {
+            innerState.close();
+        }
+
+        @Override
+        public StateStore wrappedStore() {
+            return innerState;
+        }
     }
 }

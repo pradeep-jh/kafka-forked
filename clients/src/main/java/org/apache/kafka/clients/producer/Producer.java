@@ -16,21 +16,18 @@
  */
 package org.apache.kafka.clients.producer;
 
-import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
-import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.Metric;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.PartitionInfo;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.errors.ProducerFencedException;
-import org.apache.kafka.common.metrics.KafkaMetric;
 
 import java.io.Closeable;
-import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 /**
  * The interface for the {@link KafkaProducer}
@@ -50,10 +47,10 @@ public interface Producer<K, V> extends Closeable {
     void beginTransaction() throws ProducerFencedException;
 
     /**
-     * See {@link KafkaProducer#sendOffsetsToTransaction(Map, ConsumerGroupMetadata)}
+     * See {@link KafkaProducer#sendOffsetsToTransaction(Map, String)}
      */
     void sendOffsetsToTransaction(Map<TopicPartition, OffsetAndMetadata> offsets,
-                                  ConsumerGroupMetadata groupMetadata) throws ProducerFencedException;
+                                  String consumerGroupId) throws ProducerFencedException;
 
     /**
      * See {@link KafkaProducer#commitTransaction()}
@@ -64,16 +61,6 @@ public interface Producer<K, V> extends Closeable {
      * See {@link KafkaProducer#abortTransaction()}
      */
     void abortTransaction() throws ProducerFencedException;
-
-    /**
-     * @see KafkaProducer#registerMetricForSubscription(KafkaMetric) 
-     */
-    void registerMetricForSubscription(KafkaMetric metric);
-
-    /**
-     * @see KafkaProducer#unregisterMetricFromSubscription(KafkaMetric) 
-     */
-    void unregisterMetricFromSubscription(KafkaMetric metric);
 
     /**
      * See {@link KafkaProducer#send(ProducerRecord)}
@@ -101,17 +88,13 @@ public interface Producer<K, V> extends Closeable {
     Map<MetricName, ? extends Metric> metrics();
 
     /**
-     * See {@link KafkaProducer#clientInstanceId(Duration)}}
-     */
-    Uuid clientInstanceId(Duration timeout);
-
-    /**
      * See {@link KafkaProducer#close()}
      */
     void close();
 
     /**
-     * See {@link KafkaProducer#close(Duration)}
+     * See {@link KafkaProducer#close(long, TimeUnit)}
      */
-    void close(Duration timeout);
+    void close(long timeout, TimeUnit unit);
+
 }

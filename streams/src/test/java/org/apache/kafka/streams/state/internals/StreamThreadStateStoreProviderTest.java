@@ -16,505 +16,221 @@
  */
 package org.apache.kafka.streams.state.internals;
 
-import org.apache.kafka.clients.admin.Admin;
-import org.apache.kafka.clients.admin.MockAdminClient;
-import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.clients.consumer.MockConsumer;
-import org.apache.kafka.clients.consumer.internals.AutoOffsetResetStrategy;
-import org.apache.kafka.clients.producer.MockProducer;
-import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.metrics.Metrics;
-import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
-import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
-import org.apache.kafka.streams.StoreQueryParameters;
 import org.apache.kafka.streams.StreamsConfig;
-import org.apache.kafka.streams.TopologyConfig;
-import org.apache.kafka.streams.TopologyWrapper;
 import org.apache.kafka.streams.errors.InvalidStateStoreException;
-import org.apache.kafka.streams.internals.StreamsConfigUtils;
 import org.apache.kafka.streams.processor.TaskId;
-import org.apache.kafka.streams.processor.internals.InternalProcessorContext;
-import org.apache.kafka.streams.processor.internals.InternalTopologyBuilder;
+import org.apache.kafka.streams.processor.TopologyBuilder;
 import org.apache.kafka.streams.processor.internals.MockStreamsMetrics;
-import org.apache.kafka.streams.processor.internals.ProcessorContextImpl;
-import org.apache.kafka.streams.processor.internals.ProcessorStateManager;
 import org.apache.kafka.streams.processor.internals.ProcessorTopology;
-import org.apache.kafka.streams.processor.internals.RecordCollector;
-import org.apache.kafka.streams.processor.internals.RecordCollectorImpl;
 import org.apache.kafka.streams.processor.internals.StateDirectory;
 import org.apache.kafka.streams.processor.internals.StoreChangelogReader;
 import org.apache.kafka.streams.processor.internals.StreamTask;
 import org.apache.kafka.streams.processor.internals.StreamThread;
-import org.apache.kafka.streams.processor.internals.StreamsProducer;
 import org.apache.kafka.streams.processor.internals.Task;
-import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
 import org.apache.kafka.streams.state.QueryableStoreTypes;
 import org.apache.kafka.streams.state.ReadOnlyKeyValueStore;
-import org.apache.kafka.streams.state.ReadOnlySessionStore;
 import org.apache.kafka.streams.state.ReadOnlyWindowStore;
 import org.apache.kafka.streams.state.Stores;
-import org.apache.kafka.streams.state.TimestampedKeyValueStore;
-import org.apache.kafka.streams.state.TimestampedWindowStore;
-import org.apache.kafka.streams.state.ValueAndTimestamp;
-import org.apache.kafka.test.MockApiProcessorSupplier;
-import org.apache.kafka.test.MockStandbyUpdateListener;
+import org.apache.kafka.test.MockClientSupplier;
+import org.apache.kafka.test.MockProcessorSupplier;
 import org.apache.kafka.test.MockStateRestoreListener;
 import org.apache.kafka.test.TestUtils;
-
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.mockito.junit.jupiter.MockitoSettings;
-import org.mockito.quality.Strictness;
+import org.easymock.EasyMock;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.io.File;
 import java.io.IOException;
-import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
-import java.util.Set;
 
-import static org.apache.kafka.streams.internals.StreamsConfigUtils.ProcessingMode.AT_LEAST_ONCE;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.instanceOf;
-import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.not;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
+import static org.apache.kafka.streams.state.QueryableStoreTypes.windowStore;
+import static org.junit.Assert.assertEquals;
 
-@ExtendWith(MockitoExtension.class)
-@MockitoSettings(strictness = Strictness.STRICT_STUBS)
 public class StreamThreadStateStoreProviderTest {
 
     private StreamTask taskOne;
+    private StreamTask taskTwo;
     private StreamThreadStateStoreProvider provider;
     private StateDirectory stateDirectory;
     private File stateDir;
     private final String topicName = "topic";
-    @Mock
     private StreamThread threadMock;
     private Map<TaskId, Task> tasks;
 
-    @BeforeEach
-    public void before() {
-        final TopologyWrapper topology = new TopologyWrapper();
-        topology.addSource("the-source", topicName);
-        topology.addProcessor("the-processor", new MockApiProcessorSupplier<>(), "the-source");
-        topology.addStateStore(
-            Stores.keyValueStoreBuilder(
-                Stores.inMemoryKeyValueStore("kv-store"),
-                Serdes.String(),
-                Serdes.String()),
-            "the-processor");
-        topology.addStateStore(
-            Stores.timestampedKeyValueStoreBuilder(
-                Stores.inMemoryKeyValueStore("timestamped-kv-store"),
-                Serdes.String(),
-                Serdes.String()),
-            "the-processor");
-        topology.addStateStore(
-            Stores.windowStoreBuilder(
-                Stores.inMemoryWindowStore(
-                    "window-store",
-                    Duration.ofMillis(10L),
-                    Duration.ofMillis(2L),
-                    false),
-                Serdes.String(),
-                Serdes.String()),
-            "the-processor");
-        topology.addStateStore(
-            Stores.timestampedWindowStoreBuilder(
-                Stores.inMemoryWindowStore(
-                    "timestamped-window-store",
-                    Duration.ofMillis(10L),
-                    Duration.ofMillis(2L),
-                    false),
-                Serdes.String(),
-                Serdes.String()),
-            "the-processor");
-        topology.addStateStore(
-            Stores.sessionStoreBuilder(
-                Stores.inMemorySessionStore(
-                    "session-store",
-                    Duration.ofMillis(10L)),
-                Serdes.String(),
-                Serdes.String()),
-            "the-processor");
+    @SuppressWarnings("deprecation")
+    @Before
+    public void before() throws IOException {
+        final TopologyBuilder builder = new TopologyBuilder();
+        builder.addSource("the-source", topicName);
+        builder.addProcessor("the-processor", new MockProcessorSupplier(), "the-source");
+        builder.addStateStore(Stores.create("kv-store")
+                                  .withStringKeys()
+                                  .withStringValues().inMemory().build(), "the-processor");
+
+        builder.addStateStore(Stores.create("window-store")
+                                  .withStringKeys()
+                                  .withStringValues()
+                                  .persistent()
+                                  .windowed(10, 10, 2, false).build(), "the-processor");
 
         final Properties properties = new Properties();
         final String applicationId = "applicationId";
         properties.put(StreamsConfig.APPLICATION_ID_CONFIG, applicationId);
         properties.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
         stateDir = TestUtils.tempDirectory();
-        properties.put(StreamsConfig.STATE_DIR_CONFIG, stateDir.getPath());
+        final String stateConfigDir = stateDir.getPath();
+        properties.put(StreamsConfig.STATE_DIR_CONFIG,
+                stateConfigDir);
 
         final StreamsConfig streamsConfig = new StreamsConfig(properties);
-        final MockConsumer<byte[], byte[]> mockConsumer = new MockConsumer<>(AutoOffsetResetStrategy.EARLIEST.name());
-        final MockConsumer<byte[], byte[]> mockRestoreConsumer = new MockConsumer<>(AutoOffsetResetStrategy.EARLIEST.name());
-        final MockProducer<byte[], byte[]> mockProducer = new MockProducer<>();
-        final MockAdminClient mockAdminClient = MockAdminClient.create().build();
-        configureClients(mockRestoreConsumer, mockAdminClient, "applicationId-kv-store-changelog");
-        configureClients(mockRestoreConsumer, mockAdminClient, "applicationId-window-store-changelog");
+        final MockClientSupplier clientSupplier = new MockClientSupplier();
+        configureRestoreConsumer(clientSupplier, "applicationId-kv-store-changelog");
+        configureRestoreConsumer(clientSupplier, "applicationId-window-store-changelog");
 
-        final InternalTopologyBuilder internalTopologyBuilder = topology.getInternalBuilder(applicationId);
-        final ProcessorTopology processorTopology = internalTopologyBuilder.buildTopology();
-
+        builder.setApplicationId(applicationId);
+        final ProcessorTopology topology = builder.build(null);
         tasks = new HashMap<>();
-        stateDirectory = new StateDirectory(streamsConfig, new MockTime(), true, false);
+        stateDirectory = new StateDirectory(applicationId, stateConfigDir, new MockTime());
+        taskOne = createStreamsTask(applicationId, streamsConfig, clientSupplier, topology,
+                                    new TaskId(0, 0));
+        taskOne.initialize();
+        tasks.put(new TaskId(0, 0),
+                  taskOne);
+        taskTwo = createStreamsTask(applicationId, streamsConfig, clientSupplier, topology,
+                                    new TaskId(0, 1));
+        taskTwo.initialize();
+        tasks.put(new TaskId(0, 1),
+                  taskTwo);
 
-        taskOne = createStreamsTask(
-            streamsConfig,
-            mockConsumer,
-            mockRestoreConsumer,
-            mockProducer,
-            mockAdminClient,
-            processorTopology,
-            new TaskId(0, 0));
-        taskOne.initializeIfNeeded();
-        tasks.put(new TaskId(0, 0), taskOne);
-
-        final StreamTask taskTwo = createStreamsTask(
-            streamsConfig,
-            mockConsumer,
-            mockRestoreConsumer,
-            mockProducer,
-            mockAdminClient,
-            processorTopology,
-            new TaskId(0, 1));
-        taskTwo.initializeIfNeeded();
-        tasks.put(new TaskId(0, 1), taskTwo);
-
+        threadMock = EasyMock.createNiceMock(StreamThread.class);
         provider = new StreamThreadStateStoreProvider(threadMock);
 
     }
 
-    @AfterEach
+    @After
     public void cleanUp() throws IOException {
         Utils.delete(stateDir);
     }
-
+    
     @Test
     public void shouldFindKeyValueStores() {
         mockThread(true);
         final List<ReadOnlyKeyValueStore<String, String>> kvStores =
-            provider.stores(StoreQueryParameters.fromNameAndType("kv-store", QueryableStoreTypes.keyValueStore()));
+            provider.stores("kv-store", QueryableStoreTypes.<String, String>keyValueStore());
         assertEquals(2, kvStores.size());
-        for (final ReadOnlyKeyValueStore<String, String> store: kvStores) {
-            assertThat(store, instanceOf(ReadOnlyKeyValueStore.class));
-            assertThat(store, not(instanceOf(TimestampedKeyValueStore.class)));
-        }
-    }
-
-    @Test
-    public void shouldFindTimestampedKeyValueStores() {
-        mockThread(true);
-        final List<ReadOnlyKeyValueStore<String, ValueAndTimestamp<String>>> tkvStores =
-            provider.stores(StoreQueryParameters.fromNameAndType("timestamped-kv-store", QueryableStoreTypes.timestampedKeyValueStore()));
-        assertEquals(2, tkvStores.size());
-        for (final ReadOnlyKeyValueStore<String, ValueAndTimestamp<String>> store: tkvStores) {
-            assertThat(store, instanceOf(ReadOnlyKeyValueStore.class));
-            assertThat(store, instanceOf(TimestampedKeyValueStore.class));
-        }
-    }
-
-    @Test
-    public void shouldNotFindKeyValueStoresAsTimestampedStore() {
-        mockThread(true);
-        final InvalidStateStoreException exception = assertThrows(
-            InvalidStateStoreException.class,
-            () -> provider.stores(StoreQueryParameters.fromNameAndType("kv-store", QueryableStoreTypes.timestampedKeyValueStore()))
-        );
-        assertThat(
-            exception.getMessage(),
-            is(
-                "Cannot get state store kv-store because the queryable store type " +
-                    "[class org.apache.kafka.streams.state.QueryableStoreTypes$TimestampedKeyValueStoreType] " +
-                    "does not accept the actual store type " +
-                    "[class org.apache.kafka.streams.state.internals.MeteredKeyValueStore]."
-            )
-        );
-    }
-
-    @Test
-    public void shouldFindTimestampedKeyValueStoresAsKeyValueStores() {
-        mockThread(true);
-        final List<ReadOnlyKeyValueStore<String, ValueAndTimestamp<String>>> tkvStores =
-                provider.stores(StoreQueryParameters.fromNameAndType("timestamped-kv-store", QueryableStoreTypes.keyValueStore()));
-        assertEquals(2, tkvStores.size());
-        for (final ReadOnlyKeyValueStore<String, ValueAndTimestamp<String>> store: tkvStores) {
-            assertThat(store, instanceOf(ReadOnlyKeyValueStore.class));
-            assertThat(store, not(instanceOf(TimestampedKeyValueStore.class)));
-        }
     }
 
     @Test
     public void shouldFindWindowStores() {
         mockThread(true);
-        final List<ReadOnlyWindowStore<String, String>> windowStores =
-            provider.stores(StoreQueryParameters.fromNameAndType("window-store", QueryableStoreTypes.windowStore()));
+        final List<ReadOnlyWindowStore<Object, Object>>
+            windowStores =
+            provider.stores("window-store", windowStore());
         assertEquals(2, windowStores.size());
-        for (final ReadOnlyWindowStore<String, String> store: windowStores) {
-            assertThat(store, instanceOf(ReadOnlyWindowStore.class));
-            assertThat(store, not(instanceOf(TimestampedWindowStore.class)));
-        }
     }
 
-    @Test
-    public void shouldFindTimestampedWindowStores() {
-        mockThread(true);
-        final List<ReadOnlyWindowStore<String, ValueAndTimestamp<String>>> windowStores =
-            provider.stores(StoreQueryParameters.fromNameAndType("timestamped-window-store", QueryableStoreTypes.timestampedWindowStore()));
-        assertEquals(2, windowStores.size());
-        for (final ReadOnlyWindowStore<String, ValueAndTimestamp<String>> store: windowStores) {
-            assertThat(store, instanceOf(ReadOnlyWindowStore.class));
-            assertThat(store, instanceOf(TimestampedWindowStore.class));
-        }
-    }
-
-    @Test
-    public void shouldNotFindWindowStoresAsTimestampedStore() {
-        mockThread(true);
-        final InvalidStateStoreException exception = assertThrows(
-            InvalidStateStoreException.class,
-            () -> provider.stores(StoreQueryParameters.fromNameAndType("window-store", QueryableStoreTypes.timestampedWindowStore()))
-        );
-        assertThat(
-            exception.getMessage(),
-            is(
-                "Cannot get state store window-store because the queryable store type " +
-                    "[class org.apache.kafka.streams.state.QueryableStoreTypes$TimestampedWindowStoreType] " +
-                    "does not accept the actual store type " +
-                    "[class org.apache.kafka.streams.state.internals.MeteredWindowStore]."
-            )
-        );
-    }
-
-    @Test
-    public void shouldFindTimestampedWindowStoresAsWindowStore() {
-        mockThread(true);
-        final List<ReadOnlyWindowStore<String, ValueAndTimestamp<String>>> windowStores =
-            provider.stores(StoreQueryParameters.fromNameAndType("timestamped-window-store", QueryableStoreTypes.windowStore()));
-        assertEquals(2, windowStores.size());
-        for (final ReadOnlyWindowStore<String, ValueAndTimestamp<String>> store: windowStores) {
-            assertThat(store, instanceOf(ReadOnlyWindowStore.class));
-            assertThat(store, not(instanceOf(TimestampedWindowStore.class)));
-        }
-    }
-
-    @Test
-    public void shouldFindSessionStores() {
-        mockThread(true);
-        final List<ReadOnlySessionStore<String, String>> sessionStores =
-            provider.stores(StoreQueryParameters.fromNameAndType("session-store", QueryableStoreTypes.sessionStore()));
-        assertEquals(2, sessionStores.size());
-        for (final ReadOnlySessionStore<String, String> store: sessionStores) {
-            assertThat(store, instanceOf(ReadOnlySessionStore.class));
-        }
-    }
-
-    @Test
-    public void shouldThrowInvalidStoreExceptionIfKVStoreClosed() {
-        mockThread(true);
-        taskOne.store("kv-store").close();
-        assertThrows(InvalidStateStoreException.class, () -> provider.stores(StoreQueryParameters.fromNameAndType("kv-store",
-                QueryableStoreTypes.keyValueStore())));
-    }
-
-    @Test
-    public void shouldThrowInvalidStoreExceptionIfTsKVStoreClosed() {
-        mockThread(true);
-        taskOne.store("timestamped-kv-store").close();
-        assertThrows(InvalidStateStoreException.class, () -> provider.stores(StoreQueryParameters.fromNameAndType("timestamped-kv-store",
-                QueryableStoreTypes.timestampedKeyValueStore())));
-    }
-
-    @Test
+    @Test(expected = InvalidStateStoreException.class)
     public void shouldThrowInvalidStoreExceptionIfWindowStoreClosed() {
         mockThread(true);
-        taskOne.store("window-store").close();
-        assertThrows(InvalidStateStoreException.class, () -> provider.stores(StoreQueryParameters.fromNameAndType("window-store",
-                QueryableStoreTypes.windowStore())));
+        taskOne.getStore("window-store").close();
+        provider.stores("window-store", QueryableStoreTypes.windowStore());
     }
 
-    @Test
-    public void shouldThrowInvalidStoreExceptionIfTsWindowStoreClosed() {
+    @Test(expected = InvalidStateStoreException.class)
+    public void shouldThrowInvalidStoreExceptionIfKVStoreClosed() {
         mockThread(true);
-        taskOne.store("timestamped-window-store").close();
-        assertThrows(InvalidStateStoreException.class, () -> provider.stores(StoreQueryParameters.fromNameAndType("timestamped-window-store",
-                QueryableStoreTypes.timestampedWindowStore())));
-    }
-
-    @Test
-    public void shouldThrowInvalidStoreExceptionIfSessionStoreClosed() {
-        mockThread(true);
-        taskOne.store("session-store").close();
-        assertThrows(InvalidStateStoreException.class, () -> provider.stores(StoreQueryParameters.fromNameAndType("session-store",
-                QueryableStoreTypes.sessionStore())));
+        taskOne.getStore("kv-store").close();
+        provider.stores("kv-store", QueryableStoreTypes.keyValueStore());
     }
 
     @Test
     public void shouldReturnEmptyListIfNoStoresFoundWithName() {
         mockThread(true);
-        assertEquals(
-            Collections.emptyList(),
-            provider.stores(StoreQueryParameters.fromNameAndType("not-a-store", QueryableStoreTypes.keyValueStore())));
+        assertEquals(Collections.emptyList(), provider.stores("not-a-store", QueryableStoreTypes
+            .keyValueStore()));
     }
 
+
     @Test
-    public void shouldReturnSingleStoreForPartition() {
+    public void shouldReturnEmptyListIfStoreExistsButIsNotOfTypeValueStore() {
         mockThread(true);
-        {
-            final List<ReadOnlyKeyValueStore<String, String>> kvStores =
-                provider.stores(
-                    StoreQueryParameters
-                        .fromNameAndType("kv-store", QueryableStoreTypes.keyValueStore())
-                        .withPartition(0));
-            assertEquals(1, kvStores.size());
-            for (final ReadOnlyKeyValueStore<String, String> store : kvStores) {
-                assertThat(store, instanceOf(ReadOnlyKeyValueStore.class));
-                assertThat(store, not(instanceOf(TimestampedKeyValueStore.class)));
-            }
-        }
-        {
-            final List<ReadOnlyKeyValueStore<String, String>> kvStores =
-                provider.stores(
-                    StoreQueryParameters
-                        .fromNameAndType("kv-store", QueryableStoreTypes.keyValueStore())
-                        .withPartition(1));
-            assertEquals(1, kvStores.size());
-            for (final ReadOnlyKeyValueStore<String, String> store : kvStores) {
-                assertThat(store, instanceOf(ReadOnlyKeyValueStore.class));
-                assertThat(store, not(instanceOf(TimestampedKeyValueStore.class)));
-            }
-        }
+        assertEquals(Collections.emptyList(), provider.stores("window-store",
+                                                              QueryableStoreTypes.keyValueStore()));
     }
 
-    @Test
-    public void shouldReturnEmptyListForInvalidPartitions() {
-        mockThread(true);
-        assertEquals(
-                Collections.emptyList(),
-                provider.stores(StoreQueryParameters.fromNameAndType("kv-store", QueryableStoreTypes.keyValueStore()).withPartition(2))
-        );
-    }
-
-    @Test
+    @Test(expected = InvalidStateStoreException.class)
     public void shouldThrowInvalidStoreExceptionIfNotAllStoresAvailable() {
-        when(threadMock.state()).thenReturn(StreamThread.State.PARTITIONS_ASSIGNED);
-        assertThrows(InvalidStateStoreException.class, () -> provider.stores(StoreQueryParameters.fromNameAndType("kv-store",
-                QueryableStoreTypes.keyValueStore())));
+        mockThread(false);
+        provider.stores("kv-store", QueryableStoreTypes.keyValueStore());
     }
 
-    private StreamTask createStreamsTask(final StreamsConfig streamsConfig,
-                                         final Consumer<byte[], byte[]> consumer,
-                                         final Consumer<byte[], byte[]> restoreConsumer,
-                                         final Producer<byte[], byte[]> producer,
-                                         final Admin adminClient,
+    private StreamTask createStreamsTask(final String applicationId,
+                                         final StreamsConfig streamsConfig,
+                                         final MockClientSupplier clientSupplier,
                                          final ProcessorTopology topology,
                                          final TaskId taskId) {
-        final Metrics metrics = new Metrics();
-        final LogContext logContext = new LogContext("test-stream-task ");
-        final Set<TopicPartition> partitions = Collections.singleton(new TopicPartition(topicName, taskId.partition()));
-        final ProcessorStateManager stateManager = new ProcessorStateManager(
-            taskId,
-            Task.TaskType.ACTIVE,
-            StreamsConfigUtils.eosEnabled(streamsConfig),
-            logContext,
-            stateDirectory,
-            new StoreChangelogReader(
-                new MockTime(),
-                streamsConfig,
-                logContext,
-                adminClient,
-                restoreConsumer,
-                new MockStateRestoreListener(),
-                new MockStandbyUpdateListener()),
-            topology.storeToChangelogTopic(),
-            partitions,
-            false);
-        final RecordCollector recordCollector = new RecordCollectorImpl(
-            logContext,
-            taskId,
-            new StreamsProducer(
-                producer,
-                AT_LEAST_ONCE,
-                Time.SYSTEM,
-                logContext
-            ),
-            streamsConfig.productionExceptionHandler(),
-            new MockStreamsMetrics(metrics),
-            topology
-        );
-        final StreamsMetricsImpl streamsMetrics = new MockStreamsMetrics(metrics);
-        final InternalProcessorContext<?, ?> context = new ProcessorContextImpl(
-            taskId,
-            streamsConfig,
-            stateManager,
-            streamsMetrics,
-            null
-        );
         return new StreamTask(
             taskId,
-            partitions,
+            applicationId,
+            Collections.singletonList(new TopicPartition(topicName, taskId.partition)),
             topology,
-            consumer,
-            new TopologyConfig(null, streamsConfig, new Properties()).getTaskConfig(),
-            streamsMetrics,
+            clientSupplier.consumer,
+            new StoreChangelogReader(clientSupplier.restoreConsumer, new MockStateRestoreListener(), new LogContext("test-stream-task ")),
+            streamsConfig,
+            new MockStreamsMetrics(new Metrics()),
             stateDirectory,
-            mock(ThreadCache.class),
+            null,
             new MockTime(),
-            stateManager,
-            recordCollector,
-            context,
-            logContext,
-            false
-        );
+            clientSupplier.getProducer(new HashMap<String, Object>())) {
+
+            @Override
+            protected void updateOffsetLimits() {}
+        };
     }
 
     private void mockThread(final boolean initialized) {
-        when(threadMock.readOnlyActiveTasks()).thenReturn(new HashSet<>(tasks.values()));
-        when(threadMock.state()).thenReturn(
-            initialized ? StreamThread.State.RUNNING : StreamThread.State.PARTITIONS_ASSIGNED
-        );
+        EasyMock.expect(threadMock.isRunningAndNotRebalancing()).andReturn(initialized);
+        EasyMock.expect(threadMock.tasks()).andStubReturn(tasks);
+        EasyMock.replay(threadMock);
     }
 
-    private void configureClients(final MockConsumer<byte[], byte[]> restoreConsumer,
-                                  final MockAdminClient adminClient,
-                                  final String topic) {
-        final List<PartitionInfo> partitions = Arrays.asList(
-            new PartitionInfo(topic, 0, null, null, null),
-            new PartitionInfo(topic, 1, null, null, null)
-        );
-        restoreConsumer.updatePartitions(topic, partitions);
+    private void configureRestoreConsumer(final MockClientSupplier clientSupplier,
+                                          final String topic) {
+        clientSupplier.restoreConsumer
+            .updatePartitions(topic,
+                              Arrays.asList(
+                                  new PartitionInfo(topic, 0, null,
+                                                    null, null),
+                                  new PartitionInfo(topic, 1, null,
+                                                    null, null)));
         final TopicPartition tp1 = new TopicPartition(topic, 0);
         final TopicPartition tp2 = new TopicPartition(topic, 1);
 
-        restoreConsumer.assign(Arrays.asList(tp1, tp2));
+        clientSupplier.restoreConsumer
+            .assign(Arrays.asList(
+                tp1,
+                tp2));
 
         final Map<TopicPartition, Long> offsets = new HashMap<>();
         offsets.put(tp1, 0L);
         offsets.put(tp2, 0L);
 
-        restoreConsumer.updateBeginningOffsets(offsets);
-        restoreConsumer.updateEndOffsets(offsets);
-
-        adminClient.updateBeginningOffsets(offsets);
-        adminClient.updateEndOffsets(offsets);
+        clientSupplier.restoreConsumer
+            .updateBeginningOffsets(offsets);
+        clientSupplier.restoreConsumer
+            .updateEndOffsets(offsets);
     }
 }

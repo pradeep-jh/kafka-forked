@@ -16,76 +16,70 @@
  */
 package org.apache.kafka.common.requests;
 
-import org.apache.kafka.common.errors.UnsupportedVersionException;
-import org.apache.kafka.common.message.ListGroupsRequestData;
-import org.apache.kafka.common.message.ListGroupsResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.Readable;
+import org.apache.kafka.common.protocol.types.Schema;
+import org.apache.kafka.common.protocol.types.Struct;
 
+import java.nio.ByteBuffer;
 import java.util.Collections;
 
-/**
- * Possible error codes:
- *
- * COORDINATOR_LOAD_IN_PROGRESS (14)
- * COORDINATOR_NOT_AVAILABLE (15)
- * AUTHORIZATION_FAILED (29)
- */
 public class ListGroupsRequest extends AbstractRequest {
 
+    /* List groups api */
+    private static final Schema LIST_GROUPS_REQUEST_V0 = new Schema();
+
+    /* v1 request is the same as v0. Throttle time has been added to response */
+    private static final Schema LIST_GROUPS_REQUEST_V1 = LIST_GROUPS_REQUEST_V0;
+
+    public static Schema[] schemaVersions() {
+        return new Schema[] {LIST_GROUPS_REQUEST_V0, LIST_GROUPS_REQUEST_V1};
+    }
+
     public static class Builder extends AbstractRequest.Builder<ListGroupsRequest> {
-
-        private final ListGroupsRequestData data;
-
-        public Builder(ListGroupsRequestData data) {
+        public Builder() {
             super(ApiKeys.LIST_GROUPS);
-            this.data = data;
         }
 
         @Override
         public ListGroupsRequest build(short version) {
-            if (!data.statesFilter().isEmpty() && version < 4) {
-                throw new UnsupportedVersionException("The broker only supports ListGroups " +
-                        "v" + version + ", but we need v4 or newer to request groups by states.");
-            }
-            if (!data.typesFilter().isEmpty() && version < 5) {
-                throw new UnsupportedVersionException("The broker only supports ListGroups " +
-                    "v" + version + ", but we need v5 or newer to request groups by type.");
-            }
-            return new ListGroupsRequest(data, version);
+            return new ListGroupsRequest(version);
         }
 
         @Override
         public String toString() {
-            return data.toString();
+            return "(type=ListGroupsRequest)";
         }
     }
 
-    private final ListGroupsRequestData data;
+    public ListGroupsRequest(short version) {
+        super(version);
+    }
 
-    public ListGroupsRequest(ListGroupsRequestData data, short version) {
-        super(ApiKeys.LIST_GROUPS, version);
-        this.data = data;
+    public ListGroupsRequest(Struct struct, short versionId) {
+        super(versionId);
     }
 
     @Override
     public ListGroupsResponse getErrorResponse(int throttleTimeMs, Throwable e) {
-        ListGroupsResponseData listGroupsResponseData = new ListGroupsResponseData().
-            setGroups(Collections.emptyList()).
-            setErrorCode(Errors.forException(e).code());
-        if (version() >= 1) {
-            listGroupsResponseData.setThrottleTimeMs(throttleTimeMs);
+        short versionId = version();
+        switch (versionId) {
+            case 0:
+                return new ListGroupsResponse(Errors.forException(e), Collections.<ListGroupsResponse.Group>emptyList());
+            case 1:
+                return new ListGroupsResponse(throttleTimeMs, Errors.forException(e), Collections.<ListGroupsResponse.Group>emptyList());
+            default:
+                throw new IllegalArgumentException(String.format("Version %d is not valid. Valid versions for %s are 0 to %d",
+                        versionId, this.getClass().getSimpleName(), ApiKeys.LIST_GROUPS.latestVersion()));
         }
-        return new ListGroupsResponse(listGroupsResponseData);
     }
 
-    public static ListGroupsRequest parse(Readable readable, short version) {
-        return new ListGroupsRequest(new ListGroupsRequestData(readable, version), version);
+    public static ListGroupsRequest parse(ByteBuffer buffer, short version) {
+        return new ListGroupsRequest(ApiKeys.LIST_GROUPS.parseRequest(version, buffer), version);
     }
 
     @Override
-    public ListGroupsRequestData data() {
-        return data;
+    protected Struct toStruct() {
+        return new Struct(ApiKeys.LIST_GROUPS.requestSchema(version()));
     }
 }

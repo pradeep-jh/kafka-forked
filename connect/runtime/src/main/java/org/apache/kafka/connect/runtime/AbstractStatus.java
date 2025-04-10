@@ -16,8 +16,6 @@
  */
 package org.apache.kafka.connect.runtime;
 
-import java.util.Objects;
-
 public abstract class AbstractStatus<T> {
 
     public enum State {
@@ -25,9 +23,7 @@ public abstract class AbstractStatus<T> {
         RUNNING,
         PAUSED,
         FAILED,
-        DESTROYED, // Never visible to users; destroyed Connector and Task instances are not shown
-        RESTARTING,
-        STOPPED, // Only ever visible to users for Connector instances; never for Task instances
+        DESTROYED,
     }
 
     private final T id;
@@ -85,11 +81,12 @@ public abstract class AbstractStatus<T> {
 
         AbstractStatus<?> that = (AbstractStatus<?>) o;
 
-        return generation == that.generation
-                && Objects.equals(id, that.id)
-                && state == that.state
-                && Objects.equals(trace, that.trace)
-                && Objects.equals(workerId, that.workerId);
+        if (generation != that.generation) return false;
+        if (id != null ? !id.equals(that.id) : that.id != null) return false;
+        if (state != that.state) return false;
+        if (trace != null ? !trace.equals(that.trace) : that.trace != null) return false;
+        return workerId != null ? workerId.equals(that.workerId) : that.workerId == null;
+
     }
 
     @Override

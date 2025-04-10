@@ -117,7 +117,7 @@ public class Struct {
     }
 
     /**
-     * Equivalent to calling {@link #get(String)} and casting the result to an Integer.
+     * Equivalent to calling {@link #get(String)} and casting the result to a Integer.
      */
     public Integer getInt32(String fieldName) {
         return (Integer) getCheckType(fieldName, Schema.Type.INT32);
@@ -211,9 +211,7 @@ public class Struct {
      * @return the Struct, to allow chaining of {@link #put(String, Object)} calls
      */
     public Struct put(Field field, Object value) {
-        if (null == field)
-            throw new DataException("field cannot be null.");
-        ConnectSchema.validateValue(field.name(), field.schema(), value);
+        ConnectSchema.validateValue(field.schema(), value);
         values[field.index()] = value;
         return this;
     }
@@ -222,7 +220,7 @@ public class Struct {
     /**
      * Validates that this struct has filled in all the necessary data with valid values. For required fields
      * without defaults, this validates that a value has been set and has matching types/schemas. If any validation
-     * fails, throws a {@link DataException}.
+     * fails, throws a DataException.
      */
     public void validate() {
         for (Field field : schema.fields()) {
@@ -240,12 +238,12 @@ public class Struct {
         if (o == null || getClass() != o.getClass()) return false;
         Struct struct = (Struct) o;
         return Objects.equals(schema, struct.schema) &&
-                Arrays.deepEquals(values, struct.values);
+                Arrays.equals(values, struct.values);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(schema, Arrays.deepHashCode(values));
+        return Objects.hash(schema, Arrays.hashCode(values));
     }
 
     private Field lookupField(String fieldName) {
@@ -284,3 +282,4 @@ public class Struct {
     }
 
 }
+

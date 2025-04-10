@@ -16,27 +16,16 @@
  */
 package org.apache.kafka.connect.runtime.rest.entities;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import org.apache.kafka.common.utils.AppInfoParser;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
-
 public class ServerInfo {
-    private final String version;
-    private final String commit;
-    private final String kafkaClusterId;
+    private String version;
+    private String commit;
 
-    @JsonCreator
-    private ServerInfo(@JsonProperty("version") String version,
-                       @JsonProperty("commit") String commit,
-                       @JsonProperty("kafka_cluster_id") String kafkaClusterId) {
-        this.version = version;
-        this.commit = commit;
-        this.kafkaClusterId = kafkaClusterId;
-    }
-
-    public ServerInfo(String kafkaClusterId) {
-        this(AppInfoParser.getVersion(), AppInfoParser.getCommitId(), kafkaClusterId);
+    public ServerInfo() {
+        version = AppInfoParser.getVersion();
+        commit = AppInfoParser.getCommitId();
     }
 
     @JsonProperty
@@ -47,10 +36,5 @@ public class ServerInfo {
     @JsonProperty
     public String commit() {
         return commit;
-    }
-
-    @JsonProperty("kafka_cluster_id")
-    public String clusterId() {
-        return kafkaClusterId;
     }
 }

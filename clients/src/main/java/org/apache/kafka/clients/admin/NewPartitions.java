@@ -17,17 +17,22 @@
 
 package org.apache.kafka.clients.admin;
 
+import org.apache.kafka.common.annotation.InterfaceStability;
+
 import java.util.List;
 import java.util.Map;
 
 /**
- * Describes new partitions for a particular topic in a call to {@link Admin#createPartitions(Map)}.
+ * Describes new partitions for a particular topic in a call to {@link AdminClient#createPartitions(Map)}.
+ *
+ * The API of this class is evolving, see {@link AdminClient} for details.
  */
+@InterfaceStability.Evolving
 public class NewPartitions {
 
-    private final int totalCount;
+    private int totalCount;
 
-    private final List<List<Integer>> newAssignments;
+    private List<List<Integer>> newAssignments;
 
     private NewPartitions(int totalCount, List<List<Integer>> newAssignments) {
         this.totalCount = totalCount;

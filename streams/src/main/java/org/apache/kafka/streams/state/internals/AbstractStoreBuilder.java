@@ -25,21 +25,21 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 
-public abstract class AbstractStoreBuilder<K, V, T extends StateStore> implements StoreBuilder<T> {
-    protected Map<String, String> logConfig = new HashMap<>();
-    protected final String name;
+abstract class AbstractStoreBuilder<K, V, T extends StateStore> implements StoreBuilder<T> {
+    private final String name;
+    private Map<String, String> logConfig = new HashMap<>();
     final Serde<K> keySerde;
     final Serde<V> valueSerde;
     final Time time;
     boolean enableCaching;
     boolean enableLogging = true;
 
-    public AbstractStoreBuilder(final String name,
-                                final Serde<K> keySerde,
-                                final Serde<V> valueSerde,
-                                final Time time) {
-        Objects.requireNonNull(name, "name cannot be null");
-        Objects.requireNonNull(time, "time cannot be null");
+    AbstractStoreBuilder(final String name,
+                         final Serde<K> keySerde,
+                         final Serde<V> valueSerde,
+                         final Time time) {
+        Objects.requireNonNull(name, "name can't be null");
+        Objects.requireNonNull(time, "time can't be null");
         this.name = name;
         this.keySerde = keySerde;
         this.valueSerde = valueSerde;
@@ -53,16 +53,10 @@ public abstract class AbstractStoreBuilder<K, V, T extends StateStore> implement
     }
 
     @Override
-    public StoreBuilder<T> withCachingDisabled() {
-        enableCaching = false;
-        return this;
-    }
-
-    @Override
     public StoreBuilder<T> withLoggingEnabled(final Map<String, String> config) {
         Objects.requireNonNull(config, "config can't be null");
         enableLogging = true;
-        logConfig.putAll(config);
+        logConfig = config;
         return this;
     }
 

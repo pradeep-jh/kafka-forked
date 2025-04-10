@@ -16,13 +16,12 @@
  */
 package org.apache.kafka.streams.kstream;
 
-import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.streams.errors.TopologyException;
 
-import java.io.IOException;
-import java.io.OutputStream;
-import java.nio.file.Files;
-import java.nio.file.Paths;
+import java.io.FileNotFoundException;
+import java.io.PrintWriter;
+import java.io.UnsupportedEncodingException;
+import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
 /**
@@ -32,15 +31,18 @@ import java.util.Objects;
  * @param <V> value type
  * @see KStream#print(Printed)
  */
-public class Printed<K, V> implements NamedOperation<Printed<K, V>> {
-    protected final OutputStream outputStream;
+public class Printed<K, V> {
+    protected final PrintWriter printWriter;
     protected String label;
-    protected String processorName;
-    protected KeyValueMapper<? super K, ? super V, String> mapper =
-        (KeyValueMapper<K, V, String>) (key, value) -> String.format("%s, %s", key, value);
+    protected KeyValueMapper<? super K, ? super V, String> mapper = new KeyValueMapper<K, V, String>() {
+        @Override
+        public String apply(final K key, final V value) {
+            return String.format("%s, %s", key, value);
+        }
+    };
 
-    private Printed(final OutputStream outputStream) {
-        this.outputStream = outputStream;
+    private Printed(final PrintWriter printWriter) {
+        this.printWriter = printWriter;
     }
 
     /**
@@ -48,10 +50,9 @@ public class Printed<K, V> implements NamedOperation<Printed<K, V>> {
      * @param printed   instance of {@link Printed} to copy
      */
     protected Printed(final Printed<K, V> printed) {
-        this.outputStream = printed.outputStream;
+        this.printWriter = printed.printWriter;
         this.label = printed.label;
         this.mapper = printed.mapper;
-        this.processorName = printed.processorName;
     }
 
     /**
@@ -64,12 +65,12 @@ public class Printed<K, V> implements NamedOperation<Printed<K, V>> {
      */
     public static <K, V> Printed<K, V> toFile(final String filePath) {
         Objects.requireNonNull(filePath, "filePath can't be null");
-        if (Utils.isBlank(filePath)) {
+        if (filePath.trim().isEmpty()) {
             throw new TopologyException("filePath can't be an empty string");
         }
         try {
-            return new Printed<>(Files.newOutputStream(Paths.get(filePath)));
-        } catch (final IOException e) {
+            return new Printed<>(new PrintWriter(filePath, StandardCharsets.UTF_8.name()));
+        } catch (final FileNotFoundException | UnsupportedEncodingException e) {
             throw new TopologyException("Unable to write stream to file at [" + filePath + "] " + e.getMessage());
         }
     }
@@ -82,7 +83,7 @@ public class Printed<K, V> implements NamedOperation<Printed<K, V>> {
      * @return a new Printed instance
      */
     public static <K, V> Printed<K, V> toSysOut() {
-        return new Printed<>(System.out);
+        return new Printed<>((PrintWriter) null);
     }
 
     /**
@@ -119,18 +120,6 @@ public class Printed<K, V> implements NamedOperation<Printed<K, V>> {
     public Printed<K, V> withKeyValueMapper(final KeyValueMapper<? super K, ? super V, String> mapper) {
         Objects.requireNonNull(mapper, "mapper can't be null");
         this.mapper = mapper;
-        return this;
-    }
-
-    /**
-     * Print the records of a {@link KStream} with provided processor name.
-     *
-     * @param processorName the processor name to be used. If {@code null} a default processor name will be generated
-     ** @return this
-     */
-    @Override
-    public Printed<K, V> withName(final String processorName) {
-        this.processorName = processorName;
         return this;
     }
 }

@@ -17,39 +17,17 @@
 
 package org.apache.kafka.connect.converters;
 
-import org.apache.kafka.common.config.ConfigDef;
-import org.apache.kafka.common.utils.AppInfoParser;
-import org.apache.kafka.connect.components.Versioned;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaAndValue;
 import org.apache.kafka.connect.errors.DataException;
 import org.apache.kafka.connect.storage.Converter;
-import org.apache.kafka.connect.storage.ConverterConfig;
-import org.apache.kafka.connect.storage.HeaderConverter;
 
-import java.nio.ByteBuffer;
 import java.util.Map;
 
 /**
  * Pass-through converter for raw byte data.
- * <p>
- * This implementation currently does nothing with the topic names or header keys.
  */
-public class ByteArrayConverter implements Converter, HeaderConverter, Versioned {
-
-    private static final ConfigDef CONFIG_DEF = ConverterConfig.newConfigDef();
-    @Override
-    public String version() {
-        return AppInfoParser.getVersion();
-    }
-    @Override
-    public ConfigDef config() {
-        return CONFIG_DEF;
-    }
-
-    @Override
-    public void configure(Map<String, ?> configs) {
-    }
+public class ByteArrayConverter implements Converter {
 
     @Override
     public void configure(Map<String, ?> configs, boolean isKey) {
@@ -60,10 +38,10 @@ public class ByteArrayConverter implements Converter, HeaderConverter, Versioned
         if (schema != null && schema.type() != Schema.Type.BYTES)
             throw new DataException("Invalid schema type for ByteArrayConverter: " + schema.type().toString());
 
-        if (value != null && !(value instanceof byte[]) && !(value instanceof ByteBuffer))
+        if (value != null && !(value instanceof byte[]))
             throw new DataException("ByteArrayConverter is not compatible with objects of type " + value.getClass());
 
-        return value instanceof ByteBuffer ? getBytesFromByteBuffer((ByteBuffer) value) : (byte[]) value;
+        return (byte[]) value;
     }
 
     @Override
@@ -71,29 +49,4 @@ public class ByteArrayConverter implements Converter, HeaderConverter, Versioned
         return new SchemaAndValue(Schema.OPTIONAL_BYTES_SCHEMA, value);
     }
 
-    @Override
-    public byte[] fromConnectHeader(String topic, String headerKey, Schema schema, Object value) {
-        return fromConnectData(topic, schema, value);
-    }
-
-    @Override
-    public SchemaAndValue toConnectHeader(String topic, String headerKey, byte[] value) {
-        return toConnectData(topic, value);
-    }
-
-    @Override
-    public void close() {
-        // do nothing
-    }
-
-    private byte[] getBytesFromByteBuffer(ByteBuffer byteBuffer) {
-        if (byteBuffer == null) {
-            return null;
-        }
-
-        byteBuffer.rewind();
-        byte[] bytes = new byte[byteBuffer.remaining()];
-        byteBuffer.get(bytes);
-        return bytes;
-    }
 }

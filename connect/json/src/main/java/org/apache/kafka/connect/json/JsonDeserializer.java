@@ -16,51 +16,28 @@
  */
 package org.apache.kafka.connect.json;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.kafka.common.errors.SerializationException;
 import org.apache.kafka.common.serialization.Deserializer;
 
-import com.fasterxml.jackson.core.json.JsonReadFeature;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.fasterxml.jackson.module.blackbird.BlackbirdModule;
-
-import java.util.Collections;
-import java.util.Set;
+import java.util.Map;
 
 /**
- * JSON deserializer for Jackson's {@link JsonNode} tree model. Using the tree model allows it to work with arbitrarily
+ * JSON deserializer for Jackson's JsonNode tree model. Using the tree model allows it to work with arbitrarily
  * structured data without having associated Java classes. This deserializer also supports Connect schemas.
  */
 public class JsonDeserializer implements Deserializer<JsonNode> {
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private ObjectMapper objectMapper = new ObjectMapper();
 
     /**
      * Default constructor needed by Kafka
      */
     public JsonDeserializer() {
-        this(Collections.emptySet(), new JsonNodeFactory(true), true);
     }
 
-    /**
-     * A constructor that additionally specifies some {@link DeserializationFeature}s
-     * for the deserializer
-     *
-     * @param deserializationFeatures the specified deserialization features
-     * @param jsonNodeFactory the json node factory to use.
-     */
-    JsonDeserializer(
-        final Set<DeserializationFeature> deserializationFeatures,
-        final JsonNodeFactory jsonNodeFactory,
-        final boolean enableBlackbird
-    ) {
-        objectMapper.enable(JsonReadFeature.ALLOW_LEADING_ZEROS_FOR_NUMBERS.mappedFeature());
-        deserializationFeatures.forEach(objectMapper::enable);
-        objectMapper.setNodeFactory(jsonNodeFactory);
-        if (enableBlackbird) {
-            objectMapper.registerModule(new BlackbirdModule());
-        }
+    @Override
+    public void configure(Map<String, ?> props, boolean isKey) {
     }
 
     @Override
@@ -76,5 +53,10 @@ public class JsonDeserializer implements Deserializer<JsonNode> {
         }
 
         return data;
+    }
+
+    @Override
+    public void close() {
+
     }
 }

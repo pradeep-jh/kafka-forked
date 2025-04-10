@@ -16,25 +16,20 @@
  */
 package org.apache.kafka.test;
 
-import org.apache.kafka.common.errors.AuthenticationException;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+
 import org.apache.kafka.common.network.ChannelState;
 import org.apache.kafka.common.network.NetworkReceive;
 import org.apache.kafka.common.network.NetworkSend;
 import org.apache.kafka.common.network.Selectable;
-import org.apache.kafka.common.requests.ByteBufferChannel;
+import org.apache.kafka.common.network.Send;
 import org.apache.kafka.common.utils.Time;
-
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.function.Predicate;
 
 /**
  * A fake selector to use for testing
@@ -42,31 +37,20 @@ import java.util.function.Predicate;
 public class MockSelector implements Selectable {
 
     private final Time time;
-    private final List<NetworkSend> initiatedSends = new ArrayList<>();
-    private final List<NetworkSend> completedSends = new ArrayList<>();
-    private final List<ByteBufferChannel> completedSendBuffers = new ArrayList<>();
-    private final List<NetworkReceive> completedReceives = new ArrayList<>();
+    private final List<Send> initiatedSends = new ArrayList<Send>();
+    private final List<Send> completedSends = new ArrayList<Send>();
+    private final List<NetworkReceive> completedReceives = new ArrayList<NetworkReceive>();
     private final Map<String, ChannelState> disconnected = new HashMap<>();
-    private final List<String> connected = new ArrayList<>();
+    private final List<String> connected = new ArrayList<String>();
     private final List<DelayedReceive> delayedReceives = new ArrayList<>();
-    private final Predicate<InetSocketAddress> canConnect;
-    private final Set<String> ready = new HashSet<>();
 
     public MockSelector(Time time) {
-        this(time, null);
-    }
-
-    public MockSelector(Time time, Predicate<InetSocketAddress> canConnect) {
         this.time = time;
-        this.canConnect = canConnect;
     }
 
     @Override
     public void connect(String id, InetSocketAddress address, int sendBufferSize, int receiveBufferSize) throws IOException {
-        if (canConnect == null || canConnect.test(address)) {
-            this.connected.add(id);
-            this.ready.add(id);
-        }
+        this.connected.add(id);
     }
 
     @Override
@@ -79,12 +63,7 @@ public class MockSelector implements Selectable {
 
     @Override
     public void close(String id) {
-        // Note that there are no notifications for client-side disconnects
-
-        removeSendsForNode(id, completedSends);
-        removeSendsForNode(id, initiatedSends);
-        ready.remove(id);
-
+        this.disconnected.put(id, ChannelState.LOCAL_CLOSE);
         for (int i = 0; i < this.connected.size(); i++) {
             if (this.connected.get(i).equals(id)) {
                 this.connected.remove(i);
@@ -93,96 +72,42 @@ public class MockSelector implements Selectable {
         }
     }
 
-    /**
-     * Since MockSelector.connect will always succeed and add the
-     * connection id to the Set connected, we can only simulate
-     * that the connection is still pending by removing the connection
-     * id from the Set connected.
-     *
-     * @param id connection id
-     */
-    public void serverConnectionBlocked(String id) {
-        this.connected.remove(id);
-    }
-
-    /**
-     * Simulate a server disconnect. This id will be present in {@link #disconnected()} on
-     * the next {@link #poll(long)}.
-     */
-    public void serverDisconnect(String id) {
-        this.disconnected.put(id, ChannelState.READY);
-        close(id);
-    }
-
-    public void serverAuthenticationFailed(String id) {
-        ChannelState authFailed = new ChannelState(ChannelState.State.AUTHENTICATION_FAILED,
-                new AuthenticationException("Authentication failed"), null);
-        this.disconnected.put(id, authFailed);
-        close(id);
-    }
-
-    private void removeSendsForNode(String id, Collection<NetworkSend> sends) {
-        sends.removeIf(send -> id.equals(send.destinationId()));
-    }
-
     public void clear() {
         this.completedSends.clear();
         this.completedReceives.clear();
-        this.completedSendBuffers.clear();
         this.disconnected.clear();
         this.connected.clear();
     }
 
     @Override
-    public void send(NetworkSend send) {
+    public void send(Send send) {
         this.initiatedSends.add(send);
     }
 
     @Override
     public void poll(long timeout) throws IOException {
-        completeInitiatedSends();
-        completeDelayedReceives();
-        time.sleep(timeout);
-    }
-
-    private void completeInitiatedSends() throws IOException {
-        for (NetworkSend send : initiatedSends) {
-            completeSend(send);
-        }
+        this.completedSends.addAll(this.initiatedSends);
         this.initiatedSends.clear();
-    }
-
-    private void completeSend(NetworkSend send) throws IOException {
-        // Consume the send so that we will be able to send more requests to the destination
-        try (ByteBufferChannel discardChannel = new ByteBufferChannel(send.size())) {
-            while (!send.completed()) {
-                send.writeTo(discardChannel);
-            }
-            completedSends.add(send);
-            completedSendBuffers.add(discardChannel);
-        }
-    }
-
-    private void completeDelayedReceives() {
-        for (NetworkSend completedSend : completedSends) {
+        for (Send completedSend : completedSends) {
             Iterator<DelayedReceive> delayedReceiveIterator = delayedReceives.iterator();
             while (delayedReceiveIterator.hasNext()) {
                 DelayedReceive delayedReceive = delayedReceiveIterator.next();
-                if (delayedReceive.source().equals(completedSend.destinationId())) {
+                if (delayedReceive.source().equals(completedSend.destination())) {
                     completedReceives.add(delayedReceive.receive());
                     delayedReceiveIterator.remove();
                 }
             }
         }
+        time.sleep(timeout);
     }
 
     @Override
-    public List<NetworkSend> completedSends() {
+    public List<Send> completedSends() {
         return completedSends;
     }
 
-    public List<ByteBufferChannel> completedSendBuffers() {
-        return completedSendBuffers;
+    public void completeSend(NetworkSend send) {
+        this.completedSends.add(send);
     }
 
     @Override
@@ -226,18 +151,8 @@ public class MockSelector implements Selectable {
     public void unmuteAll() {
     }
 
-    public void channelNotReady(String id) {
-        ready.remove(id);
-    }
-
     @Override
     public boolean isChannelReady(String id) {
-        return ready.contains(id);
-    }
-
-    public void reset() {
-        clear();
-        initiatedSends.clear();
-        delayedReceives.clear();
+        return true;
     }
 }

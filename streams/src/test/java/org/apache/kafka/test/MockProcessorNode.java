@@ -16,51 +16,53 @@
  */
 package org.apache.kafka.test;
 
+import org.apache.kafka.streams.processor.ProcessorContext;
 import org.apache.kafka.streams.processor.PunctuationType;
-import org.apache.kafka.streams.processor.api.Record;
-import org.apache.kafka.streams.processor.internals.InternalProcessorContext;
+import org.apache.kafka.streams.processor.Punctuator;
 import org.apache.kafka.streams.processor.internals.ProcessorNode;
 
 import java.util.Collections;
 import java.util.concurrent.atomic.AtomicInteger;
 
-public class MockProcessorNode<KIn, VIn, KOut, VOut> extends ProcessorNode<KIn, VIn, KOut, VOut> {
+public class MockProcessorNode<K, V> extends ProcessorNode<K, V> {
 
     private static final String NAME = "MOCK-PROCESS-";
     private static final AtomicInteger INDEX = new AtomicInteger(1);
 
-    public final MockProcessor<KIn, VIn, KOut, VOut> mockProcessor;
-
+    public final MockProcessorSupplier<K, V> supplier;
     public boolean closed;
+    public long punctuatedAt;
     public boolean initialized;
 
-    public MockProcessorNode(final long scheduleInterval) {
+    public MockProcessorNode(long scheduleInterval) {
         this(scheduleInterval, PunctuationType.STREAM_TIME);
     }
 
-    public MockProcessorNode(final long scheduleInterval, final PunctuationType punctuationType) {
-        this(new MockProcessor<>(punctuationType, scheduleInterval));
+    public MockProcessorNode(long scheduleInterval, PunctuationType punctuationType) {
+        this(new MockProcessorSupplier<K, V>(scheduleInterval, punctuationType));
     }
 
-    public MockProcessorNode() {
-        this(new MockProcessor<>());
-    }
+    private MockProcessorNode(MockProcessorSupplier<K, V> supplier) {
+        super(NAME + INDEX.getAndIncrement(), supplier.get(), Collections.<String>emptySet());
 
-    private MockProcessorNode(final MockProcessor<KIn, VIn, KOut, VOut> mockProcessor) {
-        super(NAME + INDEX.getAndIncrement(), mockProcessor, Collections.emptySet());
-
-        this.mockProcessor = mockProcessor;
+        this.supplier = supplier;
     }
 
     @Override
-    public void init(final InternalProcessorContext<KOut, VOut> context) {
+    public void init(final ProcessorContext context) {
         super.init(context);
         initialized = true;
     }
 
     @Override
-    public void process(final Record<KIn, VIn> record) {
-        mockProcessor.process(record);
+    public void process(K key, V value) {
+        processor().process(key, value);
+    }
+
+    @Override
+    public void punctuate(final long timestamp, final Punctuator punctuator) {
+        super.punctuate(timestamp, punctuator);
+        this.punctuatedAt = timestamp;
     }
 
     @Override

@@ -17,15 +17,11 @@
 package org.apache.kafka.clients.producer.internals;
 
 
-import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerInterceptor;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.internals.Plugin;
-import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.record.RecordBatch;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,10 +34,10 @@ import java.util.List;
  */
 public class ProducerInterceptors<K, V> implements Closeable {
     private static final Logger log = LoggerFactory.getLogger(ProducerInterceptors.class);
-    private final List<Plugin<ProducerInterceptor<K, V>>> interceptorPlugins;
+    private final List<ProducerInterceptor<K, V>> interceptors;
 
-    public ProducerInterceptors(List<ProducerInterceptor<K, V>> interceptors, Metrics metrics) {
-        this.interceptorPlugins = Plugin.wrapInstances(interceptors, metrics, ProducerConfig.INTERCEPTOR_CLASSES_CONFIG);
+    public ProducerInterceptors(List<ProducerInterceptor<K, V>> interceptors) {
+        this.interceptors = interceptors;
     }
 
     /**
@@ -60,9 +56,9 @@ public class ProducerInterceptors<K, V> implements Closeable {
      */
     public ProducerRecord<K, V> onSend(ProducerRecord<K, V> record) {
         ProducerRecord<K, V> interceptRecord = record;
-        for (Plugin<ProducerInterceptor<K, V>> interceptorPlugin : this.interceptorPlugins) {
+        for (ProducerInterceptor<K, V> interceptor : this.interceptors) {
             try {
-                interceptRecord = interceptorPlugin.get().onSend(interceptRecord);
+                interceptRecord = interceptor.onSend(interceptRecord);
             } catch (Exception e) {
                 // do not propagate interceptor exception, log and continue calling other interceptors
                 // be careful not to throw exception from here
@@ -87,9 +83,9 @@ public class ProducerInterceptors<K, V> implements Closeable {
      * @param exception The exception thrown during processing of this record. Null if no error occurred.
      */
     public void onAcknowledgement(RecordMetadata metadata, Exception exception) {
-        for (Plugin<ProducerInterceptor<K, V>> interceptorPlugin : this.interceptorPlugins) {
+        for (ProducerInterceptor<K, V> interceptor : this.interceptors) {
             try {
-                interceptorPlugin.get().onAcknowledgement(metadata, exception);
+                interceptor.onAcknowledgement(metadata, exception);
             } catch (Exception e) {
                 // do not propagate interceptor exceptions, just log
                 log.warn("Error executing interceptor onAcknowledgement callback", e);
@@ -108,16 +104,17 @@ public class ProducerInterceptors<K, V> implements Closeable {
      * @param exception The exception thrown during processing of this record.
      */
     public void onSendError(ProducerRecord<K, V> record, TopicPartition interceptTopicPartition, Exception exception) {
-        for (Plugin<ProducerInterceptor<K, V>> interceptorPlugin : this.interceptorPlugins) {
+        for (ProducerInterceptor<K, V> interceptor : this.interceptors) {
             try {
                 if (record == null && interceptTopicPartition == null) {
-                    interceptorPlugin.get().onAcknowledgement(null, exception);
+                    interceptor.onAcknowledgement(null, exception);
                 } else {
                     if (interceptTopicPartition == null) {
-                        interceptTopicPartition = extractTopicPartition(record);
+                        interceptTopicPartition = new TopicPartition(record.topic(),
+                                record.partition() == null ? RecordMetadata.UNKNOWN_PARTITION : record.partition());
                     }
-                    interceptorPlugin.get().onAcknowledgement(new RecordMetadata(interceptTopicPartition, -1, -1,
-                                    RecordBatch.NO_TIMESTAMP, -1, -1), exception);
+                    interceptor.onAcknowledgement(new RecordMetadata(interceptTopicPartition, -1, -1,
+                                    RecordBatch.NO_TIMESTAMP, Long.valueOf(-1L), -1, -1), exception);
                 }
             } catch (Exception e) {
                 // do not propagate interceptor exceptions, just log
@@ -126,18 +123,14 @@ public class ProducerInterceptors<K, V> implements Closeable {
         }
     }
 
-    public static <K, V> TopicPartition extractTopicPartition(ProducerRecord<K, V> record) {
-        return new TopicPartition(record.topic(), record.partition() == null ? RecordMetadata.UNKNOWN_PARTITION : record.partition());
-    }
-
     /**
      * Closes every interceptor in a container.
      */
     @Override
     public void close() {
-        for (Plugin<ProducerInterceptor<K, V>> interceptorPlugin : this.interceptorPlugins) {
+        for (ProducerInterceptor<K, V> interceptor : this.interceptors) {
             try {
-                interceptorPlugin.close();
+                interceptor.close();
             } catch (Exception e) {
                 log.error("Failed to close producer interceptor ", e);
             }

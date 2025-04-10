@@ -16,131 +16,40 @@
  */
 package org.apache.kafka.connect.runtime.isolation;
 
-import org.apache.kafka.common.config.provider.ConfigProvider;
-import org.apache.kafka.connect.connector.policy.ConnectorClientConfigOverridePolicy;
-import org.apache.kafka.connect.rest.ConnectRestExtension;
-import org.apache.kafka.connect.sink.SinkConnector;
-import org.apache.kafka.connect.source.SourceConnector;
+import org.apache.kafka.connect.connector.Connector;
 import org.apache.kafka.connect.storage.Converter;
-import org.apache.kafka.connect.storage.HeaderConverter;
 import org.apache.kafka.connect.transforms.Transformation;
-import org.apache.kafka.connect.transforms.predicates.Predicate;
 
-import java.util.Arrays;
-import java.util.List;
-import java.util.SortedSet;
-import java.util.TreeSet;
-import java.util.function.Consumer;
-import java.util.function.Function;
+import java.util.Collection;
 
 public class PluginScanResult {
-    private final SortedSet<PluginDesc<SinkConnector>> sinkConnectors;
-    private final SortedSet<PluginDesc<SourceConnector>> sourceConnectors;
-    private final SortedSet<PluginDesc<Converter>> converters;
-    private final SortedSet<PluginDesc<HeaderConverter>> headerConverters;
-    private final SortedSet<PluginDesc<Transformation<?>>> transformations;
-    private final SortedSet<PluginDesc<Predicate<?>>> predicates;
-    private final SortedSet<PluginDesc<ConfigProvider>> configProviders;
-    private final SortedSet<PluginDesc<ConnectRestExtension>> restExtensions;
-    private final SortedSet<PluginDesc<ConnectorClientConfigOverridePolicy>> connectorClientConfigPolicies;
-
-    private final List<SortedSet<? extends PluginDesc<?>>> allPlugins;
+    private final Collection<PluginDesc<Connector>> connectors;
+    private final Collection<PluginDesc<Converter>> converters;
+    private final Collection<PluginDesc<Transformation>> transformations;
 
     public PluginScanResult(
-            SortedSet<PluginDesc<SinkConnector>> sinkConnectors,
-            SortedSet<PluginDesc<SourceConnector>> sourceConnectors,
-            SortedSet<PluginDesc<Converter>> converters,
-            SortedSet<PluginDesc<HeaderConverter>> headerConverters,
-            SortedSet<PluginDesc<Transformation<?>>> transformations,
-            SortedSet<PluginDesc<Predicate<?>>> predicates,
-            SortedSet<PluginDesc<ConfigProvider>> configProviders,
-            SortedSet<PluginDesc<ConnectRestExtension>> restExtensions,
-            SortedSet<PluginDesc<ConnectorClientConfigOverridePolicy>> connectorClientConfigPolicies
+            Collection<PluginDesc<Connector>> connectors,
+            Collection<PluginDesc<Converter>> converters,
+            Collection<PluginDesc<Transformation>> transformations
     ) {
-        this.sinkConnectors = sinkConnectors;
-        this.sourceConnectors = sourceConnectors;
+        this.connectors = connectors;
         this.converters = converters;
-        this.headerConverters = headerConverters;
         this.transformations = transformations;
-        this.predicates = predicates;
-        this.configProviders = configProviders;
-        this.restExtensions = restExtensions;
-        this.connectorClientConfigPolicies = connectorClientConfigPolicies;
-        this.allPlugins =
-            Arrays.asList(sinkConnectors, sourceConnectors, converters, headerConverters, transformations, predicates,
-                    configProviders, restExtensions, connectorClientConfigPolicies);
     }
 
-    /**
-     * Merge one or more {@link PluginScanResult results} into one result object
-     */
-    public PluginScanResult(List<PluginScanResult> results) {
-        this(
-                merge(results, PluginScanResult::sinkConnectors),
-                merge(results, PluginScanResult::sourceConnectors),
-                merge(results, PluginScanResult::converters),
-                merge(results, PluginScanResult::headerConverters),
-                merge(results, PluginScanResult::transformations),
-                merge(results, PluginScanResult::predicates),
-                merge(results, PluginScanResult::configProviders),
-                merge(results, PluginScanResult::restExtensions),
-                merge(results, PluginScanResult::connectorClientConfigPolicies)
-        );
+    public Collection<PluginDesc<Connector>> connectors() {
+        return connectors;
     }
 
-    private static <R extends Comparable<?>> SortedSet<R> merge(List<PluginScanResult> results, Function<PluginScanResult, SortedSet<R>> accessor) {
-        SortedSet<R> merged = new TreeSet<>();
-        for (PluginScanResult element : results) {
-            merged.addAll(accessor.apply(element));
-        }
-        return merged;
-    }
-
-    public SortedSet<PluginDesc<SinkConnector>> sinkConnectors() {
-        return sinkConnectors;
-    }
-
-    public SortedSet<PluginDesc<SourceConnector>> sourceConnectors() {
-        return sourceConnectors;
-    }
-
-    public SortedSet<PluginDesc<Converter>> converters() {
+    public Collection<PluginDesc<Converter>> converters() {
         return converters;
     }
 
-    public SortedSet<PluginDesc<HeaderConverter>> headerConverters() {
-        return headerConverters;
-    }
-
-    public SortedSet<PluginDesc<Transformation<?>>> transformations() {
+    public Collection<PluginDesc<Transformation>> transformations() {
         return transformations;
     }
 
-    public SortedSet<PluginDesc<Predicate<?>>> predicates() {
-        return predicates;
-    }
-
-    public SortedSet<PluginDesc<ConfigProvider>> configProviders() {
-        return configProviders;
-    }
-
-    public SortedSet<PluginDesc<ConnectRestExtension>> restExtensions() {
-        return restExtensions;
-    }
-
-    public SortedSet<PluginDesc<ConnectorClientConfigOverridePolicy>> connectorClientConfigPolicies() {
-        return connectorClientConfigPolicies;
-    }
-
-    public void forEach(Consumer<PluginDesc<?>> consumer) {
-        allPlugins.forEach(plugins -> plugins.forEach(consumer));
-    }
-
     public boolean isEmpty() {
-        boolean isEmpty = true;
-        for (SortedSet<?> plugins : allPlugins) {
-            isEmpty = isEmpty && plugins.isEmpty();
-        }
-        return isEmpty;
+        return connectors().isEmpty() && converters().isEmpty() && transformations().isEmpty();
     }
 }

@@ -16,93 +16,50 @@
  */
 package org.apache.kafka.streams.kstream;
 
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
-import static java.time.Duration.ofMillis;
-import static org.apache.kafka.streams.EqualityCheck.verifyEquality;
-import static org.apache.kafka.streams.EqualityCheck.verifyInEquality;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.fail;
 
 public class SessionWindowsTest {
-
-    private static final long ANY_SIZE = 123L;
-    private static final long ANY_OTHER_SIZE = 456L; // should be larger than anySize
-    private static final long ANY_GRACE = 1024L;
 
     @Test
     public void shouldSetWindowGap() {
         final long anyGap = 42L;
-
-        assertEquals(anyGap, SessionWindows.ofInactivityGapWithNoGrace(ofMillis(anyGap)).inactivityGap());
-        assertEquals(anyGap, SessionWindows.ofInactivityGapAndGrace(ofMillis(anyGap), ofMillis(ANY_GRACE)).inactivityGap());
+        assertEquals(anyGap, SessionWindows.with(anyGap).inactivityGap());
     }
 
     @Test
-    public void gracePeriodShouldEnforceBoundaries() {
-        SessionWindows.ofInactivityGapAndGrace(ofMillis(3L), ofMillis(0));
+    public void shouldSetWindowRetentionTime() {
+        final long anyRetentionTime = 42L;
+        assertEquals(anyRetentionTime, SessionWindows.with(1).until(anyRetentionTime).maintainMs());
+    }
 
+    @Test(expected = IllegalArgumentException.class)
+    public void windowSizeMustNotBeNegative() {
+        SessionWindows.with(-1);
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void windowSizeMustNotBeZero() {
+        SessionWindows.with(0);
+    }
+
+    @Test
+    public void retentionTimeShouldBeGapIfGapIsLargerThanDefaultRetentionTime() {
+        final long windowGap = 2 * Windows.DEFAULT_MAINTAIN_DURATION_MS;
+        assertEquals(windowGap, SessionWindows.with(windowGap).maintainMs());
+    }
+
+    @Test
+    public void retentionTimeMustNotBeNegative() {
+        final SessionWindows windowSpec = SessionWindows.with(42);
         try {
-            SessionWindows.ofInactivityGapAndGrace(ofMillis(3L), ofMillis(-1L));
-            fail("should not accept negatives");
+            windowSpec.until(41);
+            fail("should not accept retention time smaller than gap");
         } catch (final IllegalArgumentException e) {
-            //expected
+            // expected
         }
     }
 
-    @Test
-    public void noGraceAPIShouldNotSetGracePeriod() {
-        assertEquals(0L, SessionWindows.ofInactivityGapWithNoGrace(ofMillis(3L)).gracePeriodMs());
-        assertEquals(0L, SessionWindows.ofInactivityGapWithNoGrace(ofMillis(ANY_SIZE)).gracePeriodMs());
-        assertEquals(0L, SessionWindows.ofInactivityGapWithNoGrace(ofMillis(ANY_OTHER_SIZE)).gracePeriodMs());
-    }
-
-    @Test
-    public void withGraceAPIShouldSetGracePeriod() {
-        assertEquals(ANY_GRACE, SessionWindows.ofInactivityGapAndGrace(ofMillis(3L), ofMillis(ANY_GRACE)).gracePeriodMs());
-        assertEquals(ANY_GRACE, SessionWindows.ofInactivityGapAndGrace(ofMillis(ANY_SIZE), ofMillis(ANY_GRACE)).gracePeriodMs());
-        assertEquals(ANY_GRACE, SessionWindows.ofInactivityGapAndGrace(ofMillis(ANY_OTHER_SIZE), ofMillis(ANY_GRACE)).gracePeriodMs());
-    }
-
-    @Test
-    public void sessionGapCannotBeNegative() {
-        assertThrows(IllegalArgumentException.class, () -> SessionWindows.ofInactivityGapWithNoGrace(ofMillis(-1)));
-    }
-
-    @Test
-    public void sessionGapCanBeZero() {
-        SessionWindows.ofInactivityGapWithNoGrace(ofMillis(0));
-    }
-
-    @Test
-    public void equalsAndHashcodeShouldBeValidForPositiveCases() {
-        verifyEquality(
-            SessionWindows.ofInactivityGapWithNoGrace(ofMillis(1)),
-            SessionWindows.ofInactivityGapWithNoGrace(ofMillis(1))
-        );
-
-        verifyEquality(
-            SessionWindows.ofInactivityGapAndGrace(ofMillis(1), ofMillis(11)),
-            SessionWindows.ofInactivityGapAndGrace(ofMillis(1), ofMillis(11))
-        );
-    }
-
-    @Test
-    public void equalsAndHashcodeShouldBeValidForNegativeCases() {
-        verifyInEquality(
-            SessionWindows.ofInactivityGapWithNoGrace(ofMillis(9)),
-            SessionWindows.ofInactivityGapWithNoGrace(ofMillis(1))
-        );
-
-        verifyInEquality(
-            SessionWindows.ofInactivityGapAndGrace(ofMillis(9), ofMillis(9)),
-            SessionWindows.ofInactivityGapAndGrace(ofMillis(1), ofMillis(9))
-        );
-
-        verifyInEquality(
-            SessionWindows.ofInactivityGapAndGrace(ofMillis(1), ofMillis(9)),
-            SessionWindows.ofInactivityGapAndGrace(ofMillis(1), ofMillis(6))
-        );
-    }
 }

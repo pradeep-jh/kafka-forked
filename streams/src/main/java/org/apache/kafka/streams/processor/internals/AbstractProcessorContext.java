@@ -16,64 +16,49 @@
  */
 package org.apache.kafka.streams.processor.internals;
 
-import org.apache.kafka.common.header.Headers;
-import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.streams.StreamsConfig;
-import org.apache.kafka.streams.processor.CommitCallback;
+import org.apache.kafka.streams.StreamsMetrics;
 import org.apache.kafka.streams.processor.StateRestoreCallback;
 import org.apache.kafka.streams.processor.StateStore;
 import org.apache.kafka.streams.processor.TaskId;
-import org.apache.kafka.streams.processor.api.RecordMetadata;
-import org.apache.kafka.streams.processor.internals.Task.TaskType;
-import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
 import org.apache.kafka.streams.state.internals.ThreadCache;
 
 import java.io.File;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 
-public abstract class AbstractProcessorContext<KOut, VOut> implements InternalProcessorContext<KOut, VOut> {
 
+public abstract class AbstractProcessorContext implements InternalProcessorContext {
+
+    static final String NONEXIST_TOPIC = "__null_topic__";
     private final TaskId taskId;
     private final String applicationId;
     private final StreamsConfig config;
-    private final StreamsMetricsImpl metrics;
-    private final Serde<?> keySerde;
-    private final Serde<?> valueSerde;
+    private final StreamsMetrics metrics;
+    private final Serde keySerde;
+    private final ThreadCache cache;
+    private final Serde valueSerde;
     private boolean initialized;
-    protected ProcessorRecordContext recordContext;
-    protected ProcessorNode<?, ?, ?, ?> currentNode;
-    private long cachedSystemTimeMs;
-    protected ThreadCache cache;
-    private ProcessorMetadata processorMetadata;
+    protected RecordContext recordContext;
+    protected ProcessorNode currentNode;
+    final StateManager stateManager;
 
     public AbstractProcessorContext(final TaskId taskId,
+                                    final String applicationId,
                                     final StreamsConfig config,
-                                    final StreamsMetricsImpl metrics,
+                                    final StreamsMetrics metrics,
+                                    final StateManager stateManager,
                                     final ThreadCache cache) {
         this.taskId = taskId;
-        this.applicationId = config.getString(StreamsConfig.APPLICATION_ID_CONFIG);
+        this.applicationId = applicationId;
         this.config = config;
         this.metrics = metrics;
-        valueSerde = null;
-        keySerde = null;
+        this.stateManager = stateManager;
+        valueSerde = config.defaultValueSerde();
+        keySerde = config.defaultKeySerde();
         this.cache = cache;
-        processorMetadata = new ProcessorMetadata();
-    }
-
-    protected abstract StateManager stateManager();
-
-    @Override
-    public void setSystemTimeMs(final long timeMs) {
-        cachedSystemTimeMs = timeMs;
-    }
-
-    @Override
-    public long currentSystemTimeMs() {
-        return cachedSystemTimeMs;
     }
 
     @Override
@@ -88,110 +73,87 @@ public abstract class AbstractProcessorContext<KOut, VOut> implements InternalPr
 
     @Override
     public Serde<?> keySerde() {
-        if (keySerde == null) {
-            return config.defaultKeySerde();
-        }
         return keySerde;
     }
 
     @Override
     public Serde<?> valueSerde() {
-        if (valueSerde == null) {
-            return config.defaultValueSerde();
-        }
         return valueSerde;
     }
 
     @Override
     public File stateDir() {
-        return stateManager().baseDir();
+        return stateManager.baseDir();
     }
 
     @Override
-    public StreamsMetricsImpl metrics() {
+    public StreamsMetrics metrics() {
         return metrics;
     }
 
     @Override
     public void register(final StateStore store,
+                         final boolean deprecatedAndIgnoredLoggingEnabled,
                          final StateRestoreCallback stateRestoreCallback) {
-        register(store, stateRestoreCallback, () -> { });
-    }
-
-    @Override
-    public void register(final StateStore store,
-                         final StateRestoreCallback stateRestoreCallback,
-                         final CommitCallback checkpoint) {
         if (initialized) {
             throw new IllegalStateException("Can only create state stores during initialization.");
         }
         Objects.requireNonNull(store, "store must not be null");
-        stateManager().registerStore(store, stateRestoreCallback, checkpoint);
+        stateManager.register(store, stateRestoreCallback);
     }
 
+    /**
+     * @throws IllegalStateException if the task's record is null
+     */
     @Override
     public String topic() {
         if (recordContext == null) {
-            // This is only exposed via the deprecated ProcessorContext,
-            // in which case, we're preserving the pre-existing behavior
-            // of returning dummy values when the record context is undefined.
-            // For topic, the dummy value is `null`.
-            return null;
-        } else {
-            return recordContext.topic();
+            throw new IllegalStateException("This should not happen as topic() should only be called while a record is processed");
         }
+
+        final String topic = recordContext.topic();
+
+        if (topic.equals(NONEXIST_TOPIC)) {
+            return null;
+        }
+
+        return topic;
     }
 
+    /**
+     * @throws IllegalStateException if partition is null
+     */
     @Override
     public int partition() {
         if (recordContext == null) {
-            // This is only exposed via the deprecated ProcessorContext,
-            // in which case, we're preserving the pre-existing behavior
-            // of returning dummy values when the record context is undefined.
-            // For partition, the dummy value is `-1`.
-            return -1;
-        } else {
-            return recordContext.partition();
+            throw new IllegalStateException("This should not happen as partition() should only be called while a record is processed");
         }
+
+        return recordContext.partition();
     }
 
+    /**
+     * @throws IllegalStateException if offset is null
+     */
     @Override
     public long offset() {
         if (recordContext == null) {
-            // This is only exposed via the deprecated ProcessorContext,
-            // in which case, we're preserving the pre-existing behavior
-            // of returning dummy values when the record context is undefined.
-            // For offset, the dummy value is `-1L`.
-            return -1L;
-        } else {
-            return recordContext.offset();
+            throw new IllegalStateException("This should not happen as offset() should only be called while a record is processed");
         }
+
+        return recordContext.offset();
     }
 
-    @Override
-    public Headers headers() {
-        if (recordContext == null) {
-            // This is only exposed via the deprecated ProcessorContext,
-            // in which case, we're preserving the pre-existing behavior
-            // of returning dummy values when the record context is undefined.
-            // For headers, the dummy value is an empty headers collection.
-            return new RecordHeaders();
-        } else {
-            return recordContext.headers();
-        }
-    }
-
+    /**
+     * @throws IllegalStateException if timestamp is null
+     */
     @Override
     public long timestamp() {
         if (recordContext == null) {
-            // This is only exposed via the deprecated ProcessorContext,
-            // in which case, we're preserving the pre-existing behavior
-            // of returning dummy values when the record context is undefined.
-            // For timestamp, the dummy value is `0L`.
-            return 0L;
-        } else {
-            return recordContext.timestamp();
+            throw new IllegalStateException("This should not happen as timestamp() should only be called while a record is processed");
         }
+
+        return recordContext.timestamp();
     }
 
     @Override
@@ -208,73 +170,32 @@ public abstract class AbstractProcessorContext<KOut, VOut> implements InternalPr
     }
 
     @Override
-    public void setRecordContext(final ProcessorRecordContext recordContext) {
+    public void setRecordContext(final RecordContext recordContext) {
         this.recordContext = recordContext;
     }
 
     @Override
-    public ProcessorRecordContext recordContext() {
+    public RecordContext recordContext() {
         return recordContext;
     }
 
     @Override
-    public Optional<RecordMetadata> recordMetadata() {
-        return Optional.ofNullable(recordContext);
-    }
-
-    @Override
-    public void setCurrentNode(final ProcessorNode<?, ?, ?, ?> currentNode) {
+    public void setCurrentNode(final ProcessorNode currentNode) {
         this.currentNode = currentNode;
     }
 
     @Override
-    public ProcessorNode<?, ?, ?, ?> currentNode() {
+    public ProcessorNode currentNode() {
         return currentNode;
     }
 
     @Override
-    public ThreadCache cache() {
+    public ThreadCache getCache() {
         return cache;
     }
 
     @Override
-    public void initialize() {
+    public void initialized() {
         initialized = true;
-    }
-
-    @Override
-    public void uninitialize() {
-        initialized = false;
-    }
-
-    @Override
-    public TaskType taskType() {
-        return stateManager().taskType();
-    }
-
-    @Override
-    public String changelogFor(final String storeName) {
-        return stateManager().changelogFor(storeName);
-    }
-
-    @Override
-    public void addProcessorMetadataKeyValue(final String key, final long value) {
-        processorMetadata.put(key, value);
-    }
-
-    @Override
-    public Long processorMetadataForKey(final String key) {
-        return processorMetadata.get(key);
-    }
-
-    @Override
-    public void setProcessorMetadata(final ProcessorMetadata metadata) {
-        Objects.requireNonNull(metadata);
-        processorMetadata = metadata;
-    }
-
-    @Override
-    public ProcessorMetadata processorMetadata() {
-        return processorMetadata;
     }
 }

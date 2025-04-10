@@ -19,41 +19,36 @@ package org.apache.kafka.streams.kstream;
 
 import org.apache.kafka.streams.errors.TopologyException;
 import org.apache.kafka.streams.kstream.internals.PrintedInternal;
-import org.apache.kafka.streams.processor.api.Processor;
-import org.apache.kafka.streams.processor.api.ProcessorSupplier;
-import org.apache.kafka.streams.processor.api.Record;
+import org.apache.kafka.streams.processor.Processor;
+import org.apache.kafka.streams.processor.ProcessorSupplier;
 import org.apache.kafka.test.TestUtils;
-
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.PrintStream;
 import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 
 import static org.hamcrest.CoreMatchers.equalTo;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.Assert.assertThat;
 
 public class PrintedTest {
 
     private final PrintStream originalSysOut = System.out;
     private final ByteArrayOutputStream sysOut = new ByteArrayOutputStream();
-    private Printed<String, Integer> sysOutPrinter;
+    private final Printed<String, Integer> sysOutPrinter = Printed.toSysOut();
 
-    @BeforeEach
+    @Before
     public void before() {
         System.setOut(new PrintStream(sysOut));
-        sysOutPrinter = Printed.toSysOut();
     }
 
-    @AfterEach
+    @After
     public void after() {
         System.setOut(originalSysOut);
     }
@@ -61,72 +56,72 @@ public class PrintedTest {
     @Test
     public void shouldCreateProcessorThatPrintsToFile() throws IOException {
         final File file = TestUtils.tempFile();
-        final ProcessorSupplier<String, Integer, Void, Void> processorSupplier = new PrintedInternal<>(
+        final ProcessorSupplier<String, Integer> processorSupplier = new PrintedInternal<>(
                 Printed.<String, Integer>toFile(file.getPath()))
                 .build("processor");
-        final Processor<String, Integer, Void, Void> processor = processorSupplier.get();
-        processor.process(new Record<>("hi", 1, 0L));
+        final Processor<String, Integer> processor = processorSupplier.get();
+        processor.process("hi", 1);
         processor.close();
-        try (final InputStream stream = Files.newInputStream(file.toPath())) {
+        try (final FileInputStream stream = new FileInputStream(file)) {
             final byte[] data = new byte[stream.available()];
             stream.read(data);
-            assertThat(new String(data, StandardCharsets.UTF_8), equalTo("[processor]: hi, 1\n"));
+            assertThat(new String(data, StandardCharsets.UTF_8.name()), equalTo("[processor]: hi, 1\n"));
         }
     }
 
     @Test
     public void shouldCreateProcessorThatPrintsToStdOut() throws UnsupportedEncodingException {
-        final ProcessorSupplier<String, Integer, Void, Void> supplier = new PrintedInternal<>(sysOutPrinter).build("processor");
-        final Processor<String, Integer, Void, Void> processor = supplier.get();
-
-        processor.process(new Record<>("good", 2, 0L));
-        processor.close();
+        final ProcessorSupplier<String, Integer> supplier = new PrintedInternal<>(sysOutPrinter).build("processor");
+        supplier.get().process("good", 2);
         assertThat(sysOut.toString(StandardCharsets.UTF_8.name()), equalTo("[processor]: good, 2\n"));
     }
 
     @Test
     public void shouldPrintWithLabel() throws UnsupportedEncodingException {
-        final Processor<String, Integer, Void, Void> processor = new PrintedInternal<>(sysOutPrinter.withLabel("label"))
+        final Processor<String, Integer> processor = new PrintedInternal<>(sysOutPrinter.withLabel("label"))
                 .build("processor")
                 .get();
 
-        processor.process(new Record<>("hello", 3, 0L));
-        processor.close();
+        processor.process("hello", 3);
         assertThat(sysOut.toString(StandardCharsets.UTF_8.name()), equalTo("[label]: hello, 3\n"));
     }
 
     @Test
     public void shouldPrintWithKeyValueMapper() throws UnsupportedEncodingException {
-        final Processor<String, Integer, Void, Void> processor = new PrintedInternal<>(
-            sysOutPrinter.withKeyValueMapper((key, value) -> String.format("%s -> %d", key, value))
-        ).build("processor").get();
-        processor.process(new Record<>("hello", 1, 0L));
-        processor.close();
+        final Processor<String, Integer> processor = new PrintedInternal<>(sysOutPrinter.withKeyValueMapper(
+                new KeyValueMapper<String, Integer, String>() {
+                    @Override
+                    public String apply(final String key, final Integer value) {
+                        return String.format("%s -> %d", key, value);
+                    }
+                })).build("processor")
+                .get();
+        processor.process("hello", 1);
         assertThat(sysOut.toString(StandardCharsets.UTF_8.name()), equalTo("[processor]: hello -> 1\n"));
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerExceptionIfFilePathIsNull() {
-        assertThrows(NullPointerException.class, () -> Printed.toFile(null));
+        Printed.toFile(null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerExceptionIfMapperIsNull() {
-        assertThrows(NullPointerException.class, () -> sysOutPrinter.withKeyValueMapper(null));
+        sysOutPrinter.withKeyValueMapper(null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerExceptionIfLabelIsNull() {
-        assertThrows(NullPointerException.class, () -> sysOutPrinter.withLabel(null));
+        sysOutPrinter.withLabel(null);
     }
 
-    @Test
+    @Test(expected = TopologyException.class)
     public void shouldThrowTopologyExceptionIfFilePathIsEmpty() {
-        assertThrows(TopologyException.class, () -> Printed.toFile(""));
+        Printed.toFile("");
     }
 
-    @Test
+    @Test(expected = TopologyException.class)
     public void shouldThrowTopologyExceptionIfFilePathDoesntExist() {
-        assertThrows(TopologyException.class, () -> Printed.toFile("/this/should/not/exist"));
+        Printed.toFile("/this/should/not/exist");
     }
 }

@@ -19,9 +19,8 @@ package org.apache.kafka.connect.runtime;
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.metrics.KafkaMetric;
-import org.apache.kafka.common.metrics.MetricsContext;
 import org.apache.kafka.common.metrics.MetricsReporter;
-import org.apache.kafka.common.utils.MockTime;
+import org.apache.kafka.connect.util.MockTime;
 
 import java.util.HashMap;
 import java.util.List;
@@ -48,6 +47,8 @@ public class MockConnectMetrics extends ConnectMetrics {
     static {
         DEFAULT_WORKER_CONFIG.put(WorkerConfig.KEY_CONVERTER_CLASS_CONFIG, "org.apache.kafka.connect.json.JsonConverter");
         DEFAULT_WORKER_CONFIG.put(WorkerConfig.VALUE_CONVERTER_CLASS_CONFIG, "org.apache.kafka.connect.json.JsonConverter");
+        DEFAULT_WORKER_CONFIG.put(WorkerConfig.INTERNAL_KEY_CONVERTER_CLASS_CONFIG, "org.apache.kafka.connect.json.JsonConverter");
+        DEFAULT_WORKER_CONFIG.put(WorkerConfig.INTERNAL_VALUE_CONVERTER_CLASS_CONFIG, "org.apache.kafka.connect.json.JsonConverter");
         DEFAULT_WORKER_CONFIG.put(CommonClientConfigs.METRIC_REPORTER_CLASSES_CONFIG, MockMetricsReporter.class.getName());
     }
 
@@ -55,8 +56,12 @@ public class MockConnectMetrics extends ConnectMetrics {
         this(new MockTime());
     }
 
+    public MockConnectMetrics(org.apache.kafka.common.utils.MockTime time) {
+        super("mock", new WorkerConfig(WorkerConfig.baseConfigDef(), DEFAULT_WORKER_CONFIG), time);
+    }
+
     public MockConnectMetrics(MockTime time) {
-        super("mock", new WorkerConfig(WorkerConfig.baseConfigDef(), DEFAULT_WORKER_CONFIG), time, "cluster-1");
+        super("mock", new WorkerConfig(WorkerConfig.baseConfigDef(), DEFAULT_WORKER_CONFIG), time);
     }
 
     @Override
@@ -86,7 +91,7 @@ public class MockConnectMetrics extends ConnectMetrics {
      */
     public double currentMetricValueAsDouble(MetricGroup metricGroup, String name) {
         Object value = currentMetricValue(metricGroup, name);
-        return value instanceof Double ? (Double) value : Double.NaN;
+        return value instanceof Double ? ((Double) value).doubleValue() : Double.NaN;
     }
 
     /**
@@ -132,7 +137,7 @@ public class MockConnectMetrics extends ConnectMetrics {
      */
     public static double currentMetricValueAsDouble(ConnectMetrics metrics, MetricGroup metricGroup, String name) {
         Object value = currentMetricValue(metrics, metricGroup, name);
-        return value instanceof Double ? (Double) value : Double.NaN;
+        return value instanceof Double ? ((Double) value).doubleValue() : Double.NaN;
     }
 
     /**
@@ -150,9 +155,7 @@ public class MockConnectMetrics extends ConnectMetrics {
     }
 
     public static class MockMetricsReporter implements MetricsReporter {
-        private final Map<MetricName, KafkaMetric> metricsByName = new HashMap<>();
-
-        private MetricsContext metricsContext;
+        private Map<MetricName, KafkaMetric> metricsByName = new HashMap<>();
 
         public MockMetricsReporter() {
         }
@@ -193,15 +196,6 @@ public class MockConnectMetrics extends ConnectMetrics {
         public Object currentMetricValue(MetricName metricName) {
             KafkaMetric metric = metricsByName.get(metricName);
             return metric != null ? metric.metricValue() : null;
-        }
-
-        @Override
-        public void contextChange(MetricsContext metricsContext) {
-            this.metricsContext = metricsContext;
-        }
-
-        public MetricsContext getMetricsContext() {
-            return this.metricsContext;
         }
     }
 }

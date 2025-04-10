@@ -17,12 +17,7 @@
 
 package org.apache.kafka.common.config;
 
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Map;
 import java.util.Objects;
-import java.util.function.Function;
-import java.util.stream.Collectors;
 
 /**
  * A class representing resources that have configs.
@@ -33,30 +28,7 @@ public final class ConfigResource {
      * Type of resource.
      */
     public enum Type {
-        GROUP((byte) 32),
-        CLIENT_METRICS((byte) 16),
-        BROKER_LOGGER((byte) 8),
-        BROKER((byte) 4),
-        TOPIC((byte) 2),
-        UNKNOWN((byte) 0);
-
-        private static final Map<Byte, Type> TYPES = Collections.unmodifiableMap(
-            Arrays.stream(values()).collect(Collectors.toMap(Type::id, Function.identity()))
-        );
-
-        private final byte id;
-
-        Type(final byte id) {
-            this.id = id;
-        }
-
-        public byte id() {
-            return id;
-        }
-
-        public static Type forId(final byte id) {
-            return TYPES.getOrDefault(id, UNKNOWN);
-        }
+        BROKER, TOPIC, UNKNOWN;
     }
 
     private final Type type;
@@ -89,14 +61,6 @@ public final class ConfigResource {
         return name;
     }
 
-    /**
-     * Returns true if this is the default resource of a resource type.
-     * Resource name is empty for the default resource.
-     */
-    public boolean isDefault() {
-        return name.isEmpty();
-    }
-
     @Override
     public boolean equals(Object o) {
         if (this == o)
@@ -118,6 +82,6 @@ public final class ConfigResource {
 
     @Override
     public String toString() {
-        return "ConfigResource(type=" + type + ", name='" + name + "')";
+        return "ConfigResource{type=" + type + ", name='" + name + "'}";
     }
 }

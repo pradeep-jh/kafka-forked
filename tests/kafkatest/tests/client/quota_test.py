@@ -17,10 +17,10 @@ from ducktape.tests.test import Test
 from ducktape.mark import matrix, parametrize
 from ducktape.mark.resource import cluster
 
-from kafkatest.services.kafka import KafkaService, quorum
+from kafkatest.services.zookeeper import ZookeeperService
+from kafkatest.services.kafka import KafkaService
 from kafkatest.services.performance import ProducerPerformanceService
 from kafkatest.services.console_consumer import ConsoleConsumer
-from kafkatest.version import DEV_BRANCH
 
 class QuotaConfig(object):
     CLIENT_ID = 'client-id'
@@ -77,8 +77,8 @@ class QuotaConfig(object):
 
     def configure_quota(self, kafka, producer_byte_rate, consumer_byte_rate, entity_args):
         node = kafka.nodes[0]
-        cmd = "%s --alter --add-config producer_byte_rate=%d,consumer_byte_rate=%d" % \
-              (kafka.kafka_configs_cmd_with_optional_security_settings(node, False), producer_byte_rate, consumer_byte_rate)
+        cmd = "%s --zookeeper %s --alter --add-config producer_byte_rate=%d,consumer_byte_rate=%d" % \
+              (kafka.path.script("kafka-configs.sh", node), kafka.zk_connect_setting(), producer_byte_rate, consumer_byte_rate)
         cmd += " --entity-type " + entity_args[0] + self.entity_name_opt(entity_args[1])
         if len(entity_args) > 2:
             cmd += " --entity-type " + entity_args[2] + self.entity_name_opt(entity_args[3])
@@ -106,7 +106,8 @@ class QuotaTest(Test):
         self.num_records = 50000
         self.record_size = 3000
 
-        self.kafka = KafkaService(test_context, num_nodes=1, zk=None,
+        self.zk = ZookeeperService(test_context, num_nodes=1)
+        self.kafka = KafkaService(test_context, num_nodes=1, zk=self.zk,
                                   security_protocol='SSL', authorizer_class_name='',
                                   interbroker_security_protocol='SSL',
                                   topics={self.topic: {'partitions': 6, 'replication-factor': 1, 'configs': {'min.insync.replicas': 1}}},
@@ -116,27 +117,27 @@ class QuotaTest(Test):
         self.num_producers = 1
         self.num_consumers = 2
 
+    def setUp(self):
+        self.zk.start()
+        self.kafka.start()
+
     def min_cluster_size(self):
         """Override this since we're adding services outside of the constructor"""
         return super(QuotaTest, self).min_cluster_size() + self.num_producers + self.num_consumers
 
     @cluster(num_nodes=5)
-    @matrix(quota_type=[QuotaConfig.CLIENT_ID, QuotaConfig.USER, QuotaConfig.USER_CLIENT], override_quota=[True, False], metadata_quorum=[quorum.isolated_kraft])
-    @parametrize(quota_type=QuotaConfig.CLIENT_ID, consumer_num=2, metadata_quorum=quorum.isolated_kraft)
-    def test_quota(self, quota_type, override_quota=True, producer_num=1, consumer_num=1, metadata_quorum=quorum.isolated_kraft):
-        self.kafka.start()
-
+    @matrix(quota_type=[QuotaConfig.CLIENT_ID, QuotaConfig.USER, QuotaConfig.USER_CLIENT], override_quota=[True, False])
+    @parametrize(quota_type=QuotaConfig.CLIENT_ID, consumer_num=2)
+    def test_quota(self, quota_type, override_quota=True, producer_num=1, consumer_num=1):
         self.quota_config = QuotaConfig(quota_type, override_quota, self.kafka)
         producer_client_id = self.quota_config.client_id
         consumer_client_id = self.quota_config.client_id
 
-        client_version = DEV_BRANCH
-
         # Produce all messages
         producer = ProducerPerformanceService(
             self.test_context, producer_num, self.kafka,
-            topic=self.topic, num_records=self.num_records, record_size=self.record_size, throughput=-1,
-            client_id=producer_client_id, version=client_version)
+            topic=self.topic, num_records=self.num_records, record_size=self.record_size, throughput=-1, client_id=producer_client_id,
+            jmx_object_names=['kafka.producer:type=producer-metrics,client-id=%s' % producer_client_id], jmx_attributes=['outgoing-byte-rate'])
 
         producer.run()
 
@@ -144,10 +145,10 @@ class QuotaTest(Test):
         consumer = ConsoleConsumer(self.test_context, consumer_num, self.kafka, self.topic,
             consumer_timeout_ms=60000, client_id=consumer_client_id,
             jmx_object_names=['kafka.consumer:type=consumer-fetch-manager-metrics,client-id=%s' % consumer_client_id],
-            jmx_attributes=['bytes-consumed-rate'], version=client_version)
+            jmx_attributes=['bytes-consumed-rate'])
         consumer.run()
 
-        for idx, messages in consumer.messages_consumed.items():
+        for idx, messages in consumer.messages_consumed.iteritems():
             assert len(messages) > 0, "consumer %d didn't consume any message before timeout" % idx
 
         success, msg = self.validate(self.kafka, producer, consumer)
@@ -177,9 +178,8 @@ class QuotaTest(Test):
             msg += "number of produced messages %d doesn't equal number of consumed messages %d" % (produced_num, consumed_num)
 
         # validate that maximum_producer_throughput <= producer_quota * (1 + maximum_client_deviation_percentage/100)
-        producer_maximum_bps = max(
-            metric.value for k, metrics in producer.metrics(group='producer-metrics', name='outgoing-byte-rate', client_id=producer.client_id) for metric in metrics
-        )
+        producer_attribute_name = 'kafka.producer:type=producer-metrics,client-id=%s:outgoing-byte-rate' % producer.client_id
+        producer_maximum_bps = producer.maximum_jmx_value[producer_attribute_name]
         producer_quota_bps = self.quota_config.producer_quota
         self.logger.info('producer has maximum throughput %.2f bps with producer quota %.2f bps' % (producer_maximum_bps, producer_quota_bps))
         if producer_maximum_bps > producer_quota_bps*(self.maximum_client_deviation_percentage/100+1):

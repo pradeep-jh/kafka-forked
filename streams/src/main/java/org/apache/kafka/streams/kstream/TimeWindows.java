@@ -19,14 +19,8 @@ package org.apache.kafka.streams.kstream;
 import org.apache.kafka.streams.kstream.internals.TimeWindow;
 import org.apache.kafka.streams.processor.TimestampExtractor;
 
-import java.time.Duration;
-import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.Map;
-import java.util.Objects;
-
-import static java.time.Duration.ofMillis;
-import static org.apache.kafka.streams.internals.ApiUtils.prepareMillisCheckFailMsgPrefix;
-import static org.apache.kafka.streams.internals.ApiUtils.validateMillisecondDuration;
 
 /**
  * The fixed-size time-based window specifications used for aggregations.
@@ -57,82 +51,36 @@ import static org.apache.kafka.streams.internals.ApiUtils.validateMillisecondDur
 public final class TimeWindows extends Windows<TimeWindow> {
 
     /** The size of the windows in milliseconds. */
-    @SuppressWarnings("WeakerAccess")
     public final long sizeMs;
 
     /**
      * The size of the window's advance interval in milliseconds, i.e., by how much a window moves forward relative to
      * the previous one.
      */
-    @SuppressWarnings("WeakerAccess")
     public final long advanceMs;
 
-    private final long graceMs;
-
-    private TimeWindows(final long sizeMs, final long advanceMs, final long graceMs) {
+    private TimeWindows(final long sizeMs, final long advanceMs) {
         this.sizeMs = sizeMs;
         this.advanceMs = advanceMs;
-        this.graceMs = graceMs;
+    }
 
+    /**
+     * Return a window definition with the given window size, and with the advance interval being equal to the window
+     * size.
+     * The time interval represented by the N-th window is: {@code [N * size, N * size + size)}.
+     * <p>
+     * This provides the semantics of tumbling windows, which are fixed-sized, gap-less, non-overlapping windows.
+     * Tumbling windows are a special case of hopping windows with {@code advance == size}.
+     *
+     * @param sizeMs The size of the window in milliseconds
+     * @return a new window definition with default maintain duration of 1 day
+     * @throws IllegalArgumentException if the specified window size is zero or negative
+     */
+    public static TimeWindows of(final long sizeMs) throws IllegalArgumentException {
         if (sizeMs <= 0) {
             throw new IllegalArgumentException("Window size (sizeMs) must be larger than zero.");
         }
-
-        if (advanceMs <= 0 || advanceMs > sizeMs) {
-            throw new IllegalArgumentException(String.format("Window advancement interval should be more than zero " +
-                "and less than window duration which is %d ms, but given advancement interval is: %d ms", sizeMs, advanceMs));
-        }
-
-        if (graceMs < 0) {
-            throw new IllegalArgumentException("Grace period must not be negative.");
-        }
-    }
-
-    /**
-     * Return a window definition with the given window size, and with the advance interval being equal to the window
-     * size.
-     * The time interval represented by the N-th window is: {@code [N * size, N * size + size)}.
-     * <p>
-     * This provides the semantics of tumbling windows, which are fixed-sized, gap-less, non-overlapping windows.
-     * Tumbling windows are a special case of hopping windows with {@code advance == size}.
-     * <p>
-     * CAUTION: Using this method implicitly sets the grace period to zero, which means that any out-of-order
-     * records arriving after the window ends are considered late and will be dropped.
-     *
-     * @param size The size of the window
-     * @return a new window definition with default no grace period. Note that this means out-of-order records arriving after the window end will be dropped
-     * @throws IllegalArgumentException if the specified window size is zero or negative or can't be represented as {@code long milliseconds}
-     */
-    public static TimeWindows ofSizeWithNoGrace(final Duration size) throws IllegalArgumentException {
-        return ofSizeAndGrace(size, ofMillis(NO_GRACE_PERIOD));
-    }
-
-    /**
-     * Return a window definition with the given window size, and with the advance interval being equal to the window
-     * size.
-     * The time interval represented by the N-th window is: {@code [N * size, N * size + size)}.
-     * <p>
-     * This provides the semantics of tumbling windows, which are fixed-sized, gap-less, non-overlapping windows.
-     * Tumbling windows are a special case of hopping windows with {@code advance == size}.
-     * <p>
-     * Using this method explicitly sets the grace period to the duration specified by {@code afterWindowEnd}, which
-     * means that only out-of-order records arriving more than the grace period after the window end will be dropped.
-     * The window close, after which any incoming records are considered late and will be rejected, is defined as
-     * {@code windowEnd + afterWindowEnd}
-     *
-     * @param size The size of the window. Must be larger than zero
-     * @param afterWindowEnd The grace period to admit out-of-order events to a window. Must be non-negative.
-     * @return a TimeWindows object with the specified size and the specified grace period
-     * @throws IllegalArgumentException if {@code afterWindowEnd} is negative or can't be represented as {@code long milliseconds}
-     */
-    public static TimeWindows ofSizeAndGrace(final Duration size, final Duration afterWindowEnd) throws IllegalArgumentException {
-        final String sizeMsgPrefix = prepareMillisCheckFailMsgPrefix(size, "size");
-        final long sizeMs = validateMillisecondDuration(size, sizeMsgPrefix);
-
-        final String afterWindowEndMsgPrefix = prepareMillisCheckFailMsgPrefix(afterWindowEnd, "afterWindowEnd");
-        final long afterWindowEndMs = validateMillisecondDuration(afterWindowEnd, afterWindowEndMsgPrefix);
-
-        return new TimeWindows(sizeMs, sizeMs, afterWindowEndMs);
+        return new TimeWindows(sizeMs, sizeMs);
     }
 
     /**
@@ -142,20 +90,22 @@ public final class TimeWindows extends Windows<TimeWindow> {
      * <p>
      * This provides the semantics of hopping windows, which are fixed-sized, overlapping windows.
      *
-     * @param advance The advance interval ("hop") of the window, with the requirement that {@code 0 < advance.toMillis() <= sizeMs}.
+     * @param advanceMs The advance interval ("hop") in milliseconds of the window, with the requirement that
+     *                  {@code 0 < advanceMs &le; sizeMs}.
      * @return a new window definition with default maintain duration of 1 day
-     * @throws IllegalArgumentException if the advance interval is negative, zero, or larger than the window size
+     * @throws IllegalArgumentException if the advance interval is negative, zero, or larger-or-equal the window size
      */
-    public TimeWindows advanceBy(final Duration advance) {
-        final String msgPrefix = prepareMillisCheckFailMsgPrefix(advance, "advance");
-        final long advanceMs = validateMillisecondDuration(advance, msgPrefix);
-        return new TimeWindows(sizeMs, advanceMs, graceMs);
+    public TimeWindows advanceBy(final long advanceMs) {
+        if (advanceMs <= 0 || advanceMs > sizeMs) {
+            throw new IllegalArgumentException(String.format("AdvanceMs must lie within interval (0, %d].", sizeMs));
+        }
+        return new TimeWindows(sizeMs, advanceMs);
     }
 
     @Override
     public Map<Long, TimeWindow> windowsFor(final long timestamp) {
         long windowStart = (Math.max(0, timestamp - sizeMs + advanceMs) / advanceMs) * advanceMs;
-        final Map<Long, TimeWindow> windows = new LinkedHashMap<>();
+        final Map<Long, TimeWindow> windows = new HashMap<>();
         while (windowStart <= timestamp) {
             final TimeWindow window = new TimeWindow(windowStart, windowStart + sizeMs);
             windows.put(windowStart, window);
@@ -169,36 +119,49 @@ public final class TimeWindows extends Windows<TimeWindow> {
         return sizeMs;
     }
 
+    /**
+     * @param durationMs the window retention time
+     * @return itself
+     * @throws IllegalArgumentException if {@code duration} is smaller than the window size
+     */
     @Override
-    public long gracePeriodMs() {
-        return graceMs;
+    public TimeWindows until(final long durationMs) throws IllegalArgumentException {
+        if (durationMs < sizeMs) {
+            throw new IllegalArgumentException("Window retention time (durationMs) cannot be smaller than the window size.");
+        }
+        super.until(durationMs);
+        return this;
+    }
+
+    /**
+     * {@inheritDoc}
+     * <p>
+     * For {@code TimeWindows} the maintain duration is at least as small as the window size.
+     *
+     * @return the window maintain duration
+     */
+    @Override
+    public long maintainMs() {
+        return Math.max(super.maintainMs(), sizeMs);
     }
 
     @Override
     public boolean equals(final Object o) {
-        if (this == o) {
+        if (o == this) {
             return true;
         }
-        if (o == null || getClass() != o.getClass()) {
+        if (!(o instanceof TimeWindows)) {
             return false;
         }
-        final TimeWindows that = (TimeWindows) o;
-        return sizeMs == that.sizeMs &&
-            advanceMs == that.advanceMs &&
-            graceMs == that.graceMs;
+        final TimeWindows other = (TimeWindows) o;
+        return sizeMs == other.sizeMs && advanceMs == other.advanceMs;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(sizeMs, advanceMs, graceMs);
+        int result = (int) (sizeMs ^ (sizeMs >>> 32));
+        result = 31 * result + (int) (advanceMs ^ (advanceMs >>> 32));
+        return result;
     }
 
-    @Override
-    public String toString() {
-        return "TimeWindows{" +
-            ", sizeMs=" + sizeMs +
-            ", advanceMs=" + advanceMs +
-            ", graceMs=" + graceMs +
-            '}';
-    }
 }

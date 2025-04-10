@@ -16,7 +16,7 @@
 import importlib
 import os
 
-from kafkatest.version import get_version, KafkaVersion, DEV_BRANCH, LATEST_3_5
+from kafkatest.version import get_version, KafkaVersion, DEV_BRANCH
 
 
 """This module serves a few purposes:
@@ -41,7 +41,6 @@ CORE_LIBS_JAR_NAME = "core-libs"
 CORE_DEPENDANT_TEST_LIBS_JAR_NAME = "core-dependant-testlibs"
 TOOLS_JAR_NAME = "tools"
 TOOLS_DEPENDANT_TEST_LIBS_JAR_NAME = "tools-dependant-libs"
-CONNECT_FILE_JAR = "connect-file"
 
 JARS = {
     "dev": {
@@ -49,12 +48,7 @@ JARS = {
         CORE_LIBS_JAR_NAME: "core/build/libs/*.jar",
         CORE_DEPENDANT_TEST_LIBS_JAR_NAME: "core/build/dependant-testlibs/*.jar",
         TOOLS_JAR_NAME: "tools/build/libs/kafka-tools*.jar",
-        TOOLS_DEPENDANT_TEST_LIBS_JAR_NAME: "tools/build/dependant-libs*/*.jar",
-        CONNECT_FILE_JAR: "connect/file/build/libs/connect-file*.jar"
-    },
-    # This version of the file connectors does not contain ServiceLoader manifests
-    LATEST_3_5.__str__(): {
-        CONNECT_FILE_JAR: "libs/connect-file*.jar"
+        TOOLS_DEPENDANT_TEST_LIBS_JAR_NAME: "tools/build/dependant-libs*/*.jar"
     }
 }
 
@@ -112,25 +106,25 @@ class KafkaSystemTestPathResolver(object):
         self.context = context
         self.project = project
 
-    def home(self, node_or_version=DEV_BRANCH, project=None):
+    def home(self, node_or_version=DEV_BRANCH):
         version = self._version(node_or_version)
-        home_dir = project or self.project
+        home_dir = self.project
         if version is not None:
             home_dir += "-%s" % str(version)
 
         return os.path.join(KAFKA_INSTALL_ROOT, home_dir)
 
-    def bin(self, node_or_version=DEV_BRANCH, project=None):
+    def bin(self, node_or_version=DEV_BRANCH):
         version = self._version(node_or_version)
-        return os.path.join(self.home(version, project=project), "bin")
+        return os.path.join(self.home(version), "bin")
 
-    def script(self, script_name, node_or_version=DEV_BRANCH, project=None):
+    def script(self, script_name, node_or_version=DEV_BRANCH):
         version = self._version(node_or_version)
-        return os.path.join(self.bin(version, project=project), script_name)
+        return os.path.join(self.bin(version), script_name)
 
-    def jar(self, jar_name, node_or_version=DEV_BRANCH, project=None):
+    def jar(self, jar_name, node_or_version=DEV_BRANCH):
         version = self._version(node_or_version)
-        return os.path.join(self.home(version, project=project), JARS[str(version)][jar_name])
+        return os.path.join(self.home(version), JARS[str(version)][jar_name])
 
     def scratch_space(self, service_instance):
         return os.path.join(SCRATCH_ROOT, service_instance.service_id)

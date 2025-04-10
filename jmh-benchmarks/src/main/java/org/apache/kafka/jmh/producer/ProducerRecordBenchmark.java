@@ -18,7 +18,6 @@
 package org.apache.kafka.jmh.producer;
 
 import org.apache.kafka.clients.producer.ProducerRecord;
-
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -42,7 +41,7 @@ public class ProducerRecordBenchmark {
     @Benchmark
     @OutputTimeUnit(TimeUnit.NANOSECONDS)
     public ProducerRecord<String, String> constructorBenchmark() {
-        return new ProducerRecord<>("topic", "value");
+        return new ProducerRecord("topic", "value");
     }
 
 }

@@ -16,179 +16,107 @@
  */
 package org.apache.kafka.streams.kstream.internals;
 
-import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.streams.kstream.ValueJoiner;
-import org.apache.kafka.streams.processor.api.ContextualProcessor;
-import org.apache.kafka.streams.processor.api.Processor;
-import org.apache.kafka.streams.processor.api.ProcessorContext;
-import org.apache.kafka.streams.processor.api.Record;
-import org.apache.kafka.streams.processor.api.RecordMetadata;
-import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
-import org.apache.kafka.streams.state.ValueAndTimestamp;
+import org.apache.kafka.streams.processor.AbstractProcessor;
+import org.apache.kafka.streams.processor.Processor;
+import org.apache.kafka.streams.processor.ProcessorContext;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+class KTableKTableRightJoin<K, R, V1, V2> extends KTableKTableAbstractJoin<K, R, V1, V2> {
 
-import static org.apache.kafka.streams.processor.internals.metrics.TaskMetrics.droppedRecordsSensor;
-import static org.apache.kafka.streams.state.ValueAndTimestamp.getValueOrNull;
 
-class KTableKTableRightJoin<K, V1, V2, VOut> extends KTableKTableAbstractJoin<K, V1, V2, VOut> {
-    private static final Logger LOG = LoggerFactory.getLogger(KTableKTableRightJoin.class);
-
-    KTableKTableRightJoin(final KTableImpl<K, ?, V1> table1,
-                          final KTableImpl<K, ?, V2> table2,
-                          final ValueJoiner<? super V1, ? super V2, ? extends VOut> joiner) {
+    KTableKTableRightJoin(KTableImpl<K, ?, V1> table1, KTableImpl<K, ?, V2> table2, ValueJoiner<? super V1, ? super V2, ? extends R> joiner) {
         super(table1, table2, joiner);
     }
 
     @Override
-    public Processor<K, Change<V1>, K, Change<VOut>> get() {
+    public Processor<K, Change<V1>> get() {
         return new KTableKTableRightJoinProcessor(valueGetterSupplier2.get());
     }
 
     @Override
-    public KTableValueGetterSupplier<K, VOut> view() {
+    public KTableValueGetterSupplier<K, R> view() {
         return new KTableKTableRightJoinValueGetterSupplier(valueGetterSupplier1, valueGetterSupplier2);
     }
 
-    private class KTableKTableRightJoinValueGetterSupplier extends KTableKTableAbstractJoinValueGetterSupplier<K, VOut, V1, V2> {
+    private class KTableKTableRightJoinValueGetterSupplier extends AbstractKTableKTableJoinValueGetterSupplier<K, R, V1, V2> {
 
-        KTableKTableRightJoinValueGetterSupplier(final KTableValueGetterSupplier<K, V1> valueGetterSupplier1,
-                                                 final KTableValueGetterSupplier<K, V2> valueGetterSupplier2) {
+        public KTableKTableRightJoinValueGetterSupplier(KTableValueGetterSupplier<K, V1> valueGetterSupplier1, KTableValueGetterSupplier<K, V2> valueGetterSupplier2) {
             super(valueGetterSupplier1, valueGetterSupplier2);
         }
 
-        public KTableValueGetter<K, VOut> get() {
+        public KTableValueGetter<K, R> get() {
             return new KTableKTableRightJoinValueGetter(valueGetterSupplier1.get(), valueGetterSupplier2.get());
         }
     }
 
-    private class KTableKTableRightJoinProcessor extends ContextualProcessor<K, Change<V1>, K, Change<VOut>> {
+    private class KTableKTableRightJoinProcessor extends AbstractProcessor<K, Change<V1>> {
 
         private final KTableValueGetter<K, V2> valueGetter;
-        private Sensor droppedRecordsSensor;
 
-        KTableKTableRightJoinProcessor(final KTableValueGetter<K, V2> valueGetter) {
+        public KTableKTableRightJoinProcessor(KTableValueGetter<K, V2> valueGetter) {
             this.valueGetter = valueGetter;
         }
 
         @Override
-        public void init(final ProcessorContext<K, Change<VOut>> context) {
+        public void init(ProcessorContext context) {
             super.init(context);
-            droppedRecordsSensor = droppedRecordsSensor(
-                Thread.currentThread().getName(),
-                context.taskId().toString(),
-                (StreamsMetricsImpl) context.metrics()
-            );
             valueGetter.init(context);
         }
 
         @Override
-        public void process(final Record<K, Change<V1>> record) {
+        public void process(final K key, final Change<V1> change) {
             // we do join iff keys are equal, thus, if key is null we cannot join and just ignore the record
-            if (record.key() == null) {
-                if (context().recordMetadata().isPresent()) {
-                    final RecordMetadata recordMetadata = context().recordMetadata().get();
-                    LOG.warn(
-                        "Skipping record due to null key. "
-                            + "topic=[{}] partition=[{}] offset=[{}]",
-                        recordMetadata.topic(), recordMetadata.partition(), recordMetadata.offset()
-                    );
-                } else {
-                    LOG.warn(
-                        "Skipping record due to null key. Topic, partition, and offset not known."
-                    );
-                }
-                droppedRecordsSensor.record();
+            if (key == null) {
                 return;
             }
 
-            // drop out-of-order records from versioned tables (cf. KIP-914)
-            if (useVersionedSemantics && !record.value().isLatest) {
-                LOG.info("Skipping out-of-order record from versioned table while performing table-table join.");
-                droppedRecordsSensor.record();
+            final R newValue;
+            R oldValue = null;
+
+            final V2 value2 = valueGetter.get(key);
+            if (value2 == null) {
                 return;
             }
 
-            final VOut newValue;
-            final long resultTimestamp;
-            VOut oldValue = null;
-
-            final ValueAndTimestamp<V2> valueAndTimestampLeft = valueGetter.get(record.key());
-            final V2 valueLeft = getValueOrNull(valueAndTimestampLeft);
-            if (valueLeft == null) {
-                return;
-            }
-
-            resultTimestamp = Math.max(record.timestamp(), valueAndTimestampLeft.timestamp());
-
-            // joiner == "reverse joiner"
-            newValue = joiner.apply(record.value().newValue, valueLeft);
+            newValue = joiner.apply(change.newValue, value2);
 
             if (sendOldValues) {
-                // joiner == "reverse joiner"
-                oldValue = joiner.apply(record.value().oldValue, valueLeft);
+                oldValue = joiner.apply(change.oldValue, value2);
             }
 
-            context().forward(record.withValue(new Change<>(newValue, oldValue, record.value().isLatest)).withTimestamp(resultTimestamp));
+            context().forward(key, new Change<>(newValue, oldValue));
         }
 
-        @Override
-        public void close() {
-            valueGetter.close();
-        }
     }
 
-    private class KTableKTableRightJoinValueGetter implements KTableValueGetter<K, VOut> {
+    private class KTableKTableRightJoinValueGetter implements KTableValueGetter<K, R> {
 
         private final KTableValueGetter<K, V1> valueGetter1;
         private final KTableValueGetter<K, V2> valueGetter2;
 
-        KTableKTableRightJoinValueGetter(final KTableValueGetter<K, V1> valueGetter1,
-                                         final KTableValueGetter<K, V2> valueGetter2) {
+        public KTableKTableRightJoinValueGetter(KTableValueGetter<K, V1> valueGetter1, KTableValueGetter<K, V2> valueGetter2) {
             this.valueGetter1 = valueGetter1;
             this.valueGetter2 = valueGetter2;
         }
 
         @Override
-        public void init(final ProcessorContext<?, ?> context) {
+        public void init(ProcessorContext context) {
             valueGetter1.init(context);
             valueGetter2.init(context);
         }
 
         @Override
-        public ValueAndTimestamp<VOut> get(final K key) {
-            final ValueAndTimestamp<V2> valueAndTimestamp2 = valueGetter2.get(key);
-            final V2 value2 = getValueOrNull(valueAndTimestamp2);
+        public R get(K key) {
+            V2 value2 = valueGetter2.get(key);
 
             if (value2 != null) {
-                final ValueAndTimestamp<V1> valueAndTimestamp1 = valueGetter1.get(key);
-                final V1 value1 = getValueOrNull(valueAndTimestamp1);
-                final long resultTimestamp;
-                if (valueAndTimestamp1 == null) {
-                    resultTimestamp = valueAndTimestamp2.timestamp();
-                } else {
-                    resultTimestamp = Math.max(valueAndTimestamp1.timestamp(), valueAndTimestamp2.timestamp());
-                }
-                return ValueAndTimestamp.make(joiner.apply(value1, value2), resultTimestamp);
+                V1 value1 = valueGetter1.get(key);
+                return joiner.apply(value1, value2);
             } else {
                 return null;
             }
         }
 
-        @Override
-        public boolean isVersioned() {
-            // even though we can derive a proper versioned result (assuming both parent value
-            // getters are versioned), we choose not to since the output of a join of two
-            // versioned tables today is not considered versioned (cf KIP-914)
-            return false;
-        }
-
-        @Override
-        public void close() {
-            valueGetter1.close();
-            valueGetter2.close();
-        }
     }
 
 }

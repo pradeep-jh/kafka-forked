@@ -16,15 +16,12 @@
  */
 package org.apache.kafka.connect.runtime.isolation;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
-
 import org.apache.maven.artifact.versioning.DefaultArtifactVersion;
 
 import java.util.Objects;
 
-public class PluginDesc<T> implements Comparable<PluginDesc<?>> {
-    public static final String UNDEFINED_VERSION = "undefined";
+public class PluginDesc<T> implements Comparable<PluginDesc<T>> {
     private final Class<? extends T> klass;
     private final String name;
     private final String version;
@@ -32,20 +29,17 @@ public class PluginDesc<T> implements Comparable<PluginDesc<?>> {
     private final PluginType type;
     private final String typeName;
     private final String location;
-    private final ClassLoader loader;
 
-    public PluginDesc(Class<? extends T> klass, String version, PluginType type, ClassLoader loader) {
-        this.klass = Objects.requireNonNull(klass, "Plugin class must be non-null");
-        this.name = this.klass.getName();
+    public PluginDesc(Class<? extends T> klass, String version, ClassLoader loader) {
+        this.klass = klass;
+        this.name = klass.getName();
         this.version = version != null ? version : "null";
         this.encodedVersion = new DefaultArtifactVersion(this.version);
-        this.type = Objects.requireNonNull(type, "Plugin type must be non-null");
-        this.typeName = this.type.toString();
-        Objects.requireNonNull(loader, "Plugin classloader must be non-null");
+        this.type = PluginType.from(klass);
+        this.typeName = type.toString();
         this.location = loader instanceof PluginClassLoader
-                ? Objects.requireNonNull(((PluginClassLoader) loader).location(), "Plugin location must be non-null")
+                ? ((PluginClassLoader) loader).location()
                 : "classpath";
-        this.loader = loader;
     }
 
     @Override
@@ -59,11 +53,6 @@ public class PluginDesc<T> implements Comparable<PluginDesc<?>> {
                 ", typeName='" + typeName + '\'' +
                 ", location='" + location + '\'' +
                 '}';
-    }
-
-    @JsonIgnore
-    public DefaultArtifactVersion encodedVersion() {
-        return encodedVersion;
     }
 
     public Class<? extends T> pluginClass() {
@@ -94,18 +83,15 @@ public class PluginDesc<T> implements Comparable<PluginDesc<?>> {
         return location;
     }
 
-    public ClassLoader loader() {
-        return loader;
-    }
-
     @Override
     public boolean equals(Object o) {
         if (this == o) {
             return true;
         }
-        if (!(o instanceof PluginDesc<?> that)) {
+        if (!(o instanceof PluginDesc)) {
             return false;
         }
+        PluginDesc<?> that = (PluginDesc<?>) o;
         return Objects.equals(klass, that.klass) &&
                 Objects.equals(version, that.version) &&
                 type == that.type;
@@ -117,18 +103,8 @@ public class PluginDesc<T> implements Comparable<PluginDesc<?>> {
     }
 
     @Override
-    public int compareTo(PluginDesc<?> other) {
+    public int compareTo(PluginDesc other) {
         int nameComp = name.compareTo(other.name);
-        int versionComp = encodedVersion.compareTo(other.encodedVersion);
-        // isolated plugins appear after classpath plugins when they have identical versions.
-        int isolatedComp = Boolean.compare(other.loader instanceof PluginClassLoader, loader instanceof PluginClassLoader);
-        // choose an arbitrary order between different locations and types
-        int loaderComp = location.compareTo(other.location);
-        int typeComp = type.compareTo(other.type);
-        return nameComp != 0 ? nameComp :
-                versionComp != 0 ? versionComp :
-                        isolatedComp != 0 ? isolatedComp :
-                                loaderComp != 0 ? loaderComp :
-                                        typeComp;
+        return nameComp != 0 ? nameComp : encodedVersion.compareTo(other.encodedVersion);
     }
 }

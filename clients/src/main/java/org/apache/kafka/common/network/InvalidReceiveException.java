@@ -24,4 +24,7 @@ public class InvalidReceiveException extends KafkaException {
         super(message);
     }
 
+    public InvalidReceiveException(String message, Throwable cause) {
+        super(message, cause);
+    }
 }

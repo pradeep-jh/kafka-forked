@@ -16,44 +16,44 @@
  */
 package org.apache.kafka.streams.kstream.internals;
 
-import org.apache.kafka.common.serialization.IntegerSerializer;
+import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.common.serialization.Serdes;
-import org.apache.kafka.common.serialization.StringSerializer;
+import org.apache.kafka.streams.Consumed;
 import org.apache.kafka.streams.KeyValue;
 import org.apache.kafka.streams.StreamsBuilder;
-import org.apache.kafka.streams.TestInputTopic;
-import org.apache.kafka.streams.TopologyTestDriver;
-import org.apache.kafka.streams.kstream.Consumed;
 import org.apache.kafka.streams.kstream.ForeachAction;
 import org.apache.kafka.streams.kstream.KStream;
-import org.apache.kafka.test.StreamsTestUtils;
-
-import org.junit.jupiter.api.Test;
+import org.apache.kafka.test.KStreamTestDriver;
+import org.junit.Rule;
+import org.junit.Test;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
-import java.util.Properties;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.Assert.assertEquals;
 
 public class KStreamForeachTest {
 
-    private final String topicName = "topic";
-    private final Properties props = StreamsTestUtils.getStreamsConfig(Serdes.Integer(), Serdes.String());
+    final private String topicName = "topic";
+
+    final private Serde<Integer> intSerde = Serdes.Integer();
+    final private Serde<String> stringSerde = Serdes.String();
+    @Rule
+    public final KStreamTestDriver driver = new KStreamTestDriver();
 
     @Test
     public void testForeach() {
         // Given
-        final List<KeyValue<Integer, String>> inputRecords = Arrays.asList(
+        List<KeyValue<Integer, String>> inputRecords = Arrays.asList(
             new KeyValue<>(0, "zero"),
             new KeyValue<>(1, "one"),
             new KeyValue<>(2, "two"),
             new KeyValue<>(3, "three")
         );
 
-        final List<KeyValue<Integer, String>> expectedRecords = Arrays.asList(
+        List<KeyValue<Integer, String>> expectedRecords = Arrays.asList(
             new KeyValue<>(0, "ZERO"),
             new KeyValue<>(2, "ONE"),
             new KeyValue<>(4, "TWO"),
@@ -61,33 +61,39 @@ public class KStreamForeachTest {
         );
 
         final List<KeyValue<Integer, String>> actualRecords = new ArrayList<>();
-        final ForeachAction<Integer, String> action =
-            (key, value) -> actualRecords.add(new KeyValue<>(key * 2, value.toUpperCase(Locale.ROOT)));
+        ForeachAction<Integer, String> action =
+            new ForeachAction<Integer, String>() {
+                @Override
+                public void apply(Integer key, String value) {
+                    actualRecords.add(new KeyValue<>(key * 2, value.toUpperCase(Locale.ROOT)));
+                }
+            };
 
         // When
-        final StreamsBuilder builder = new StreamsBuilder();
-        final KStream<Integer, String> stream = builder.stream(topicName, Consumed.with(Serdes.Integer(), Serdes.String()));
+        StreamsBuilder builder = new StreamsBuilder();
+        KStream<Integer, String> stream = builder.stream(topicName, Consumed.with(intSerde, stringSerde));
         stream.foreach(action);
 
         // Then
-        try (final TopologyTestDriver driver = new TopologyTestDriver(builder.build(), props)) {
-            final TestInputTopic<Integer, String> inputTopic = driver.createInputTopic(topicName, new IntegerSerializer(), new StringSerializer());
-            for (final KeyValue<Integer, String> record : inputRecords) {
-                inputTopic.pipeInput(record.key, record.value);
-            }
+        driver.setUp(builder);
+        for (KeyValue<Integer, String> record: inputRecords) {
+            driver.process(topicName, record.key, record.value);
         }
 
         assertEquals(expectedRecords.size(), actualRecords.size());
         for (int i = 0; i < expectedRecords.size(); i++) {
-            final KeyValue<Integer, String> expectedRecord = expectedRecords.get(i);
-            final KeyValue<Integer, String> actualRecord = actualRecords.get(i);
+            KeyValue<Integer, String> expectedRecord = expectedRecords.get(i);
+            KeyValue<Integer, String> actualRecord = actualRecords.get(i);
             assertEquals(expectedRecord, actualRecord);
         }
     }
 
     @Test
     public void testTypeVariance() {
-        final ForeachAction<Number, Object> consume = (key, value) -> { };
+        ForeachAction<Number, Object> consume = new ForeachAction<Number, Object>() {
+            @Override
+            public void apply(Number key, Object value) {}
+        };
 
         new StreamsBuilder()
             .<Integer, String>stream("emptyTopic")

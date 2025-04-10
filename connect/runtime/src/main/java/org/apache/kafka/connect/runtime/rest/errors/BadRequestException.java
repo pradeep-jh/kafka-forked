@@ -16,7 +16,7 @@
  */
 package org.apache.kafka.connect.runtime.rest.errors;
 
-import jakarta.ws.rs.core.Response;
+import javax.ws.rs.core.Response;
 
 public class BadRequestException extends ConnectRestException {
 
@@ -24,7 +24,4 @@ public class BadRequestException extends ConnectRestException {
         super(Response.Status.BAD_REQUEST, message);
     }
 
-    public BadRequestException(String message, Throwable throwable) {
-        super(Response.Status.BAD_REQUEST, message, throwable);
-    }
 }

@@ -17,26 +17,19 @@
 
 package org.apache.kafka.clients.admin;
 
+import org.apache.kafka.common.annotation.InterfaceStability;
+
 import java.util.Collection;
 
 /**
- * Options for {@link Admin#createTopics(Collection)}.
+ * Options for {@link AdminClient#createTopics(Collection)}.
+ *
+ * The API of this class is evolving, see {@link AdminClient} for details.
  */
+@InterfaceStability.Evolving
 public class CreateTopicsOptions extends AbstractOptions<CreateTopicsOptions> {
 
     private boolean validateOnly = false;
-    private boolean retryOnQuotaViolation = true;
-
-    /**
-     * Set the timeout in milliseconds for this operation or {@code null} if the default api timeout for the
-     * AdminClient should be used.
-     *
-     */
-    // This method is retained to keep binary compatibility with 0.11
-    public CreateTopicsOptions timeoutMs(Integer timeoutMs) {
-        this.timeoutMs = timeoutMs;
-        return this;
-    }
 
     /**
      * Set to true if the request should be validated without creating the topic.
@@ -53,19 +46,4 @@ public class CreateTopicsOptions extends AbstractOptions<CreateTopicsOptions> {
         return validateOnly;
     }
 
-
-    /**
-     * Set to true if quota violation should be automatically retried.
-     */
-    public CreateTopicsOptions retryOnQuotaViolation(boolean retryOnQuotaViolation) {
-        this.retryOnQuotaViolation = retryOnQuotaViolation;
-        return this;
-    }
-
-    /**
-     * Returns true if quota violation should be automatically retried.
-     */
-    public boolean shouldRetryOnQuotaViolation() {
-        return retryOnQuotaViolation;
-    }
 }

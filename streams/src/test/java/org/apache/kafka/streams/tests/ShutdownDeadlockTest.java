@@ -22,16 +22,15 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.kafka.common.utils.Exit;
+import org.apache.kafka.streams.Consumed;
 import org.apache.kafka.streams.KafkaStreams;
 import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.StreamsConfig;
-import org.apache.kafka.streams.errors.StreamsUncaughtExceptionHandler;
-import org.apache.kafka.streams.kstream.Consumed;
 import org.apache.kafka.streams.kstream.ForeachAction;
 import org.apache.kafka.streams.kstream.KStream;
 
-import java.time.Duration;
 import java.util.Properties;
+import java.util.concurrent.TimeUnit;
 
 public class ShutdownDeadlockTest {
 
@@ -56,12 +55,19 @@ public class ShutdownDeadlockTest {
             }
         });
         final KafkaStreams streams = new KafkaStreams(builder.build(), props);
-        streams.setUncaughtExceptionHandler(e -> {
-            Exit.exit(1);
-            return StreamsUncaughtExceptionHandler.StreamThreadExceptionResponse.SHUTDOWN_CLIENT;
+        streams.setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+            @Override
+            public void uncaughtException(final Thread t, final Throwable e) {
+                Exit.exit(1);
+            }
         });
 
-        Exit.addShutdownHook("streams-shutdown-hook", () -> streams.close(Duration.ofSeconds(5)));
+        Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
+            @Override
+            public void run() {
+                streams.close(5, TimeUnit.SECONDS);
+            }
+        }));
 
         final Properties producerProps = new Properties();
         producerProps.put(ProducerConfig.CLIENT_ID_CONFIG, "SmokeTest");
@@ -78,7 +84,7 @@ public class ShutdownDeadlockTest {
         synchronized (this) {
             try {
                 wait();
-            } catch (final InterruptedException e) {
+            } catch (InterruptedException e) {
                 // ignored
             }
         }

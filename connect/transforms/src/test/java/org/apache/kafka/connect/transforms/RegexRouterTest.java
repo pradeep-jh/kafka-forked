@@ -16,15 +16,13 @@
  */
 package org.apache.kafka.connect.transforms;
 
-import org.apache.kafka.common.utils.AppInfoParser;
 import org.apache.kafka.connect.sink.SinkRecord;
-
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.util.HashMap;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.Assert.assertEquals;
 
 public class RegexRouterTest {
 
@@ -67,12 +65,6 @@ public class RegexRouterTest {
     @Test
     public void slice() {
         assertEquals("index", apply("(.*)-(\\d\\d\\d\\d\\d\\d\\d\\d)", "$1", "index-20160117"));
-    }
-
-    @Test
-    public void testRegexRouterRetrievesVersionFromAppInfoParser() {
-        final RegexRouter<SinkRecord> router = new RegexRouter<>();
-        assertEquals(AppInfoParser.getVersion(), router.version());
     }
 
 }

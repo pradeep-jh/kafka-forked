@@ -16,15 +16,28 @@
  */
 package org.apache.kafka.common.requests;
 
-import org.apache.kafka.common.message.HeartbeatResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.ByteBufferAccessor;
 import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.protocol.types.Schema;
+import org.apache.kafka.common.protocol.types.Struct;
 
 import java.nio.ByteBuffer;
 import java.util.Map;
 
+import static org.apache.kafka.common.protocol.CommonFields.ERROR_CODE;
+import static org.apache.kafka.common.protocol.CommonFields.THROTTLE_TIME_MS;
+
 public class HeartbeatResponse extends AbstractResponse {
+
+    private static final Schema HEARTBEAT_RESPONSE_V0 = new Schema(
+            ERROR_CODE);
+    private static final Schema HEARTBEAT_RESPONSE_V1 = new Schema(
+            THROTTLE_TIME_MS,
+            ERROR_CODE);
+
+    public static Schema[] schemaVersions() {
+        return new Schema[] {HEARTBEAT_RESPONSE_V0, HEARTBEAT_RESPONSE_V1};
+    }
 
     /**
      * Possible error codes:
@@ -36,43 +49,45 @@ public class HeartbeatResponse extends AbstractResponse {
      * REBALANCE_IN_PROGRESS (27)
      * GROUP_AUTHORIZATION_FAILED (30)
      */
-    private final HeartbeatResponseData data;
+    private final Errors error;
+    private final int throttleTimeMs;
 
-    public HeartbeatResponse(HeartbeatResponseData data) {
-        super(ApiKeys.HEARTBEAT);
-        this.data = data;
+    public HeartbeatResponse(Errors error) {
+        this(DEFAULT_THROTTLE_TIME, error);
     }
 
-    @Override
+    public HeartbeatResponse(int throttleTimeMs, Errors error) {
+        this.throttleTimeMs = throttleTimeMs;
+        this.error = error;
+    }
+
+    public HeartbeatResponse(Struct struct) {
+        this.throttleTimeMs = struct.getOrElse(THROTTLE_TIME_MS, DEFAULT_THROTTLE_TIME);
+        error = Errors.forCode(struct.get(ERROR_CODE));
+    }
+
     public int throttleTimeMs() {
-        return data.throttleTimeMs();
-    }
-
-    @Override
-    public void maybeSetThrottleTimeMs(int throttleTimeMs) {
-        data.setThrottleTimeMs(throttleTimeMs);
+        return throttleTimeMs;
     }
 
     public Errors error() {
-        return Errors.forCode(data.errorCode());
+        return error;
     }
 
     @Override
     public Map<Errors, Integer> errorCounts() {
-        return errorCounts(error());
+        return errorCounts(error);
     }
 
     @Override
-    public HeartbeatResponseData data() {
-        return data;
+    protected Struct toStruct(short version) {
+        Struct struct = new Struct(ApiKeys.HEARTBEAT.responseSchema(version));
+        struct.setIfExists(THROTTLE_TIME_MS, throttleTimeMs);
+        struct.set(ERROR_CODE, error.code());
+        return struct;
     }
 
     public static HeartbeatResponse parse(ByteBuffer buffer, short version) {
-        return new HeartbeatResponse(new HeartbeatResponseData(new ByteBufferAccessor(buffer), version));
-    }
-
-    @Override
-    public boolean shouldClientThrottle(short version) {
-        return version >= 2;
+        return new HeartbeatResponse(ApiKeys.HEARTBEAT.parseResponse(version, buffer));
     }
 }

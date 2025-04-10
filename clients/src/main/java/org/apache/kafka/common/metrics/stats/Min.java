@@ -16,9 +16,9 @@
  */
 package org.apache.kafka.common.metrics.stats;
 
-import org.apache.kafka.common.metrics.MetricConfig;
-
 import java.util.List;
+
+import org.apache.kafka.common.metrics.MetricConfig;
 
 /**
  * A {@link SampledStat} that gives the min over its samples.
@@ -37,12 +37,9 @@ public class Min extends SampledStat {
     @Override
     public double combine(List<Sample> samples, MetricConfig config, long now) {
         double min = Double.MAX_VALUE;
-        long count = 0;
-        for (Sample sample : samples) {
+        for (Sample sample : samples)
             min = Math.min(min, sample.value);
-            count += sample.eventCount;
-        }
-        return count == 0 ? Double.NaN : min;
+        return min;
     }
 
 }

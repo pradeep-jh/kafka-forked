@@ -18,14 +18,20 @@
 package kafka.server
 
 import java.util.Properties
-import scala.collection.Seq
-import kafka.security.JaasTestUtils.JaasSection
+
+import kafka.api.Both
+import kafka.utils.JaasTestUtils.JaasSection
+import org.apache.kafka.common.network.ListenerName
+
 
 class MultipleListenersWithDefaultJaasContextTest extends MultipleListenersWithSameSecurityProtocolBaseTest {
 
-  override def staticJaasSections: Seq[JaasSection] =
-    jaasSections(kafkaServerSaslMechanisms.values.flatten.toSeq, Some(kafkaClientSaslMechanism))
+  import MultipleListenersWithSameSecurityProtocolBaseTest._
 
-  override protected def dynamicJaasSections: Properties = new Properties
+  override def saslProperties(listenerName: ListenerName): Properties =
+    kafkaClientSaslProperties(Plain, dynamicJaasConfig = true)
+
+  override def jaasSections: Seq[JaasSection] =
+    jaasSections(kafkaServerSaslMechanisms, Some(kafkaClientSaslMechanism), Both)
 
 }

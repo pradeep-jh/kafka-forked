@@ -16,85 +16,65 @@
  */
 package org.apache.kafka.connect.runtime;
 
-import org.apache.kafka.clients.consumer.Consumer;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.consumer.OffsetCommitCallback;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.WakeupException;
-import org.apache.kafka.common.internals.Plugin;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.metrics.stats.Avg;
-import org.apache.kafka.common.metrics.stats.CumulativeSum;
 import org.apache.kafka.common.metrics.stats.Max;
 import org.apache.kafka.common.metrics.stats.Rate;
+import org.apache.kafka.common.metrics.stats.Total;
 import org.apache.kafka.common.metrics.stats.Value;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
-import org.apache.kafka.common.utils.Utils.UncheckedCloseable;
 import org.apache.kafka.connect.data.SchemaAndValue;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.errors.RetriableException;
-import org.apache.kafka.connect.header.ConnectHeaders;
-import org.apache.kafka.connect.header.Headers;
 import org.apache.kafka.connect.runtime.ConnectMetrics.MetricGroup;
-import org.apache.kafka.connect.runtime.errors.ErrorHandlingMetrics;
-import org.apache.kafka.connect.runtime.errors.ErrorReporter;
-import org.apache.kafka.connect.runtime.errors.ProcessingContext;
-import org.apache.kafka.connect.runtime.errors.RetryWithToleranceOperator;
-import org.apache.kafka.connect.runtime.errors.Stage;
-import org.apache.kafka.connect.runtime.errors.WorkerErrantRecordReporter;
-import org.apache.kafka.connect.runtime.isolation.LoaderSwap;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.kafka.connect.sink.SinkTask;
-import org.apache.kafka.connect.storage.ClusterConfigState;
 import org.apache.kafka.connect.storage.Converter;
-import org.apache.kafka.connect.storage.HeaderConverter;
-import org.apache.kafka.connect.storage.StatusBackingStore;
 import org.apache.kafka.connect.util.ConnectUtils;
 import org.apache.kafka.connect.util.ConnectorTaskId;
-
+import org.apache.kafka.connect.util.SinkUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
-import java.util.function.Supplier;
-import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 import static java.util.Collections.singleton;
-import static org.apache.kafka.connect.runtime.WorkerConfig.TOPIC_TRACKING_ENABLE_CONFIG;
 
 /**
- * {@link WorkerTask} that uses a {@link SinkTask} to export data from Kafka.
+ * WorkerTask that uses a SinkTask to export data from Kafka.
  */
-class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkRecord> {
+class WorkerSinkTask extends WorkerTask {
     private static final Logger log = LoggerFactory.getLogger(WorkerSinkTask.class);
 
     private final WorkerConfig workerConfig;
     private final SinkTask task;
-    private final ClusterConfigState configState;
     private Map<String, String> taskConfig;
-    private final Plugin<Converter> keyConverterPlugin;
-    private final Plugin<Converter> valueConverterPlugin;
-    private final Plugin<HeaderConverter> headerConverterPlugin;
+    private final Time time;
+    private final Converter keyConverter;
+    private final Converter valueConverter;
+    private final TransformationChain<SinkRecord> transformationChain;
     private final SinkTaskMetricsGroup sinkTaskMetricsGroup;
-    private final boolean isTopicTrackingEnabled;
-    private final Consumer<byte[], byte[]> consumer;
+    private KafkaConsumer<byte[], byte[]> consumer;
     private WorkerSinkTaskContext context;
     private final List<SinkRecord> messageBatch;
-    private final Map<TopicPartition, OffsetAndMetadata> lastCommittedOffsets;
-    private final Map<TopicPartition, OffsetAndMetadata> currentOffsets;
+    private Map<TopicPartition, OffsetAndMetadata> lastCommittedOffsets;
+    private Map<TopicPartition, OffsetAndMetadata> currentOffsets;
     private final Map<TopicPartition, OffsetAndMetadata> origOffsets;
     private RuntimeException rebalanceException;
     private long nextCommit;
@@ -103,40 +83,27 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
     private int commitFailures;
     private boolean pausedForRedelivery;
     private boolean committing;
-    private boolean taskStopped;
-    private final WorkerErrantRecordReporter workerErrantRecordReporter;
 
     public WorkerSinkTask(ConnectorTaskId id,
                           SinkTask task,
                           TaskStatus.Listener statusListener,
                           TargetState initialState,
                           WorkerConfig workerConfig,
-                          ClusterConfigState configState,
                           ConnectMetrics connectMetrics,
-                          Plugin<Converter> keyConverterPlugin,
-                          Plugin<Converter> valueConverterPlugin,
-                          ErrorHandlingMetrics errorMetrics,
-                          Plugin<HeaderConverter> headerConverterPlugin,
-                          TransformationChain<ConsumerRecord<byte[], byte[]>, SinkRecord> transformationChain,
-                          Consumer<byte[], byte[]> consumer,
+                          Converter keyConverter,
+                          Converter valueConverter,
+                          TransformationChain<SinkRecord> transformationChain,
                           ClassLoader loader,
-                          Time time,
-                          RetryWithToleranceOperator<ConsumerRecord<byte[], byte[]>> retryWithToleranceOperator,
-                          WorkerErrantRecordReporter workerErrantRecordReporter,
-                          StatusBackingStore statusBackingStore,
-                          Supplier<List<ErrorReporter<ConsumerRecord<byte[], byte[]>>>> errorReportersSupplier,
-                          Function<ClassLoader, LoaderSwap> pluginLoaderSwapper) {
-        super(id, statusListener, initialState, loader, connectMetrics, errorMetrics,
-                retryWithToleranceOperator, transformationChain, errorReportersSupplier, time, statusBackingStore, pluginLoaderSwapper);
+                          Time time) {
+        super(id, statusListener, initialState, loader, connectMetrics);
 
         this.workerConfig = workerConfig;
         this.task = task;
-        this.configState = configState;
-        this.keyConverterPlugin = keyConverterPlugin;
-        this.valueConverterPlugin = valueConverterPlugin;
-        this.headerConverterPlugin = headerConverterPlugin;
+        this.keyConverter = keyConverter;
+        this.valueConverter = valueConverter;
+        this.transformationChain = transformationChain;
+        this.time = time;
         this.messageBatch = new ArrayList<>();
-        this.lastCommittedOffsets = new HashMap<>();
         this.currentOffsets = new HashMap<>();
         this.origOffsets = new HashMap<>();
         this.pausedForRedelivery = false;
@@ -149,17 +116,14 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
         this.commitFailures = 0;
         this.sinkTaskMetricsGroup = new SinkTaskMetricsGroup(id, connectMetrics);
         this.sinkTaskMetricsGroup.recordOffsetSequenceNumber(commitSeqno);
-        this.consumer = consumer;
-        this.isTopicTrackingEnabled = workerConfig.getBoolean(TOPIC_TRACKING_ENABLE_CONFIG);
-        this.taskStopped = false;
-        this.workerErrantRecordReporter = workerErrantRecordReporter;
     }
 
     @Override
     public void initialize(TaskConfig taskConfig) {
         try {
             this.taskConfig = taskConfig.originalsStrings();
-            this.context = new WorkerSinkTaskContext(consumer, this, configState);
+            this.consumer = createConsumer();
+            this.context = new WorkerSinkTaskContext(consumer);
         } catch (Throwable t) {
             log.error("{} Task failed initialization and will not be started.", this, t);
             onFailure(t);
@@ -177,34 +141,15 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
     protected void close() {
         // FIXME Kafka needs to add a timeout parameter here for us to properly obey the timeout
         // passed in
-        try {
-            task.stop();
-        } catch (Throwable t) {
-            log.warn("Could not stop task", t);
-        }
-        taskStopped = true;
-        Utils.closeQuietly(consumer, "consumer");
-        Utils.closeQuietly(headerConverterPlugin, "header converter");
-        Utils.closeQuietly(keyConverterPlugin, "key converter");
-        Utils.closeQuietly(valueConverterPlugin, "value converter");
-        Utils.closeQuietly(pluginMetrics, "plugin metrics");
-        /*
-            Setting partition count explicitly to 0 to handle the case,
-            when the task fails, which would cause its consumer to leave the group.
-            This would cause onPartitionsRevoked to be invoked in the rebalance listener, but not onPartitionsAssigned,
-            so the metrics for the task (which are still available for failed tasks until they are explicitly revoked
-            from the worker) would become inaccurate.
-        */
-        sinkTaskMetricsGroup.recordPartitionCount(0);
+        task.stop();
+        if (consumer != null)
+            consumer.close();
+        transformationChain.close();
     }
 
     @Override
-    public void removeMetrics() {
-        try {
-            sinkTaskMetricsGroup.close();
-        } finally {
-            super.removeMetrics();
-        }
+    protected void releaseResources() {
+        sinkTaskMetricsGroup.close();
     }
 
     @Override
@@ -215,15 +160,14 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
 
     @Override
     public void execute() {
-        log.info("{} Executing sink task", this);
-        // Make sure any uncommitted data has been committed and the task has
-        // a chance to clean up its state
-        try (UncheckedCloseable suppressible = this::closeAllPartitions) {
+        initializeAndStart();
+        try {
             while (!isStopping())
                 iteration();
-        } catch (WakeupException e) {
-            log.trace("Consumer woken up during initial offset commit attempt, " 
-                + "but succeeded during a later attempt");
+        } finally {
+            // Make sure any uncommitted data has been committed and the task has
+            // a chance to clean up its state
+            closePartitions();
         }
     }
 
@@ -235,8 +179,8 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
 
             // Maybe commit
             if (!committing && (context.isCommitRequested() || now >= nextCommit)) {
-                commitOffsets(now);
-                nextCommit = now + offsetCommitIntervalMs;
+                commitOffsets(now, false);
+                nextCommit += offsetCommitIntervalMs;
                 context.clearCommitRequest();
             }
 
@@ -289,14 +233,13 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
                 log.error("{} Commit of offsets threw an unexpected exception for sequence number {}: {}",
                         this, seqno, committedOffsets, error);
                 commitFailures++;
-                recordCommitFailure(durationMillis);
+                recordCommitFailure(durationMillis, error);
             } else {
                 log.debug("{} Finished offset commit successfully in {} ms for sequence number {}: {}",
                         this, durationMillis, seqno, committedOffsets);
                 if (committedOffsets != null) {
-                    log.trace("{} Adding to last committed offsets: {}", this, committedOffsets);
-                    lastCommittedOffsets.putAll(committedOffsets);
-                    log.debug("{} Last committed offsets are now {}", this, committedOffsets);
+                    log.debug("{} Setting last committed offsets to {}", this, committedOffsets);
+                    lastCommittedOffsets = committedOffsets;
                     sinkTaskMetricsGroup.recordCommittedOffsets(committedOffsets);
                 }
                 commitFailures = 0;
@@ -313,20 +256,13 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
     /**
      * Initializes and starts the SinkTask.
      */
-    @Override
     protected void initializeAndStart() {
-        SinkConnectorConfig.validate(taskConfig);
-        if (SinkConnectorConfig.hasTopicsConfig(taskConfig)) {
-            List<String> topics = SinkConnectorConfig.parseTopicsList(taskConfig);
-            consumer.subscribe(topics, new HandleRebalance());
-            log.debug("{} Initializing and starting task for topics {}", this, String.join(", ", topics));
-        } else {
-            String topicsRegexStr = taskConfig.get(SinkTask.TOPICS_REGEX_CONFIG);
-            Pattern pattern = Pattern.compile(topicsRegexStr);
-            consumer.subscribe(pattern, new HandleRebalance());
-            log.debug("{} Initializing and starting task for topics regex {}", this, topicsRegexStr);
-        }
-
+        String topicsStr = taskConfig.get(SinkTask.TOPICS_CONFIG);
+        if (topicsStr == null || topicsStr.isEmpty())
+            throw new ConnectException("Sink tasks require a list of topics.");
+        String[] topics = topicsStr.split(",");
+        consumer.subscribe(Arrays.asList(topics), new HandleRebalance());
+        log.debug("{} Initializing and starting task for topics {}", this, topics);
         task.initialize(context);
         task.start(taskConfig);
         log.info("{} Sink task finished initialization and start", this);
@@ -352,23 +288,13 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
         deliverMessages();
     }
 
-    // VisibleForTesting
+    // Visible for testing
     boolean isCommitting() {
         return committing;
     }
 
-    //VisibleForTesting
-    Map<TopicPartition, OffsetAndMetadata> lastCommittedOffsets() {
-        return Collections.unmodifiableMap(lastCommittedOffsets);
-    }
-
-    //VisibleForTesting
-    Map<TopicPartition, OffsetAndMetadata> currentOffsets() {
-        return Collections.unmodifiableMap(currentOffsets);
-    }
-
     private void doCommitSync(Map<TopicPartition, OffsetAndMetadata> offsets, int seqno) {
-        log.debug("{} Committing offsets synchronously using sequence number {}: {}", this, seqno, offsets);
+        log.info("{} Committing offsets synchronously using sequence number {}: {}", this, seqno, offsets);
         try {
             consumer.commitSync(offsets);
             onCommitCompleted(null, seqno, offsets);
@@ -382,20 +308,21 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
     }
 
     private void doCommitAsync(Map<TopicPartition, OffsetAndMetadata> offsets, final int seqno) {
-        log.debug("{} Committing offsets asynchronously using sequence number {}: {}", this, seqno, offsets);
-        OffsetCommitCallback cb = (tpOffsets, error) -> onCommitCompleted(error, seqno, tpOffsets);
+        log.info("{} Committing offsets asynchronously using sequence number {}: {}", this, seqno, offsets);
+        OffsetCommitCallback cb = new OffsetCommitCallback() {
+            @Override
+            public void onComplete(Map<TopicPartition, OffsetAndMetadata> offsets, Exception error) {
+                onCommitCompleted(error, seqno, offsets);
+            }
+        };
         consumer.commitAsync(offsets, cb);
     }
 
     /**
      * Starts an offset commit by flushing outstanding messages from the task and then starting
      * the write commit.
-     */
+     **/
     private void doCommit(Map<TopicPartition, OffsetAndMetadata> offsets, boolean closing, int seqno) {
-        if (isCancelled()) {
-            log.debug("Skipping final offset commit as task has been cancelled");
-            return;
-        }
         if (closing) {
             doCommitSync(offsets, seqno);
         } else {
@@ -403,23 +330,8 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
         }
     }
 
-    private void commitOffsets(long now) {
-        commitOffsets(now, false, consumer.assignment());
-    }
-
-    private void commitOffsets(long now, boolean closing, Collection<TopicPartition> topicPartitions) {
-        log.trace("Committing offsets for partitions {}", topicPartitions);
-        if (workerErrantRecordReporter != null) {
-            log.trace("Awaiting reported errors to be completed");
-            workerErrantRecordReporter.awaitFutures(topicPartitions);
-            log.trace("Completed reported errors");
-        }
-
-        Map<TopicPartition, OffsetAndMetadata> offsetsToCommit = currentOffsets.entrySet().stream()
-            .filter(e -> topicPartitions.contains(e.getKey()))
-            .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
-
-        if (offsetsToCommit.isEmpty())
+    private void commitOffsets(long now, boolean closing) {
+        if (currentOffsets.isEmpty())
             return;
 
         committing = true;
@@ -427,31 +339,28 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
         commitStarted = now;
         sinkTaskMetricsGroup.recordOffsetSequenceNumber(commitSeqno);
 
-        Map<TopicPartition, OffsetAndMetadata> lastCommittedOffsetsForPartitions = this.lastCommittedOffsets.entrySet().stream()
-            .filter(e -> offsetsToCommit.containsKey(e.getKey()))
-            .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
-
         final Map<TopicPartition, OffsetAndMetadata> taskProvidedOffsets;
         try {
-            log.trace("{} Calling task.preCommit with current offsets: {}", this, offsetsToCommit);
-            taskProvidedOffsets = task.preCommit(new HashMap<>(offsetsToCommit));
+            log.trace("{} Calling task.preCommit with current offsets: {}", this, currentOffsets);
+            taskProvidedOffsets = task.preCommit(new HashMap<>(currentOffsets));
         } catch (Throwable t) {
             if (closing) {
                 log.warn("{} Offset commit failed during close", this);
+                onCommitCompleted(t, commitSeqno, null);
             } else {
                 log.error("{} Offset commit failed, rewinding to last committed offsets", this, t);
-                for (Map.Entry<TopicPartition, OffsetAndMetadata> entry : lastCommittedOffsetsForPartitions.entrySet()) {
+                for (Map.Entry<TopicPartition, OffsetAndMetadata> entry : lastCommittedOffsets.entrySet()) {
                     log.debug("{} Rewinding topic partition {} to offset {}", this, entry.getKey(), entry.getValue().offset());
                     consumer.seek(entry.getKey(), entry.getValue().offset());
                 }
-                currentOffsets.putAll(lastCommittedOffsetsForPartitions);
+                currentOffsets = new HashMap<>(lastCommittedOffsets);
+                onCommitCompleted(t, commitSeqno, null);
             }
-            onCommitCompleted(t, commitSeqno, null);
             return;
         } finally {
             if (closing) {
-                log.trace("{} Closing the task before committing the offsets: {}", this, offsetsToCommit);
-                task.close(topicPartitions);
+                log.trace("{} Closing the task before committing the offsets: {}", this, currentOffsets);
+                task.close(currentOffsets.keySet());
             }
         }
 
@@ -461,36 +370,32 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
             return;
         }
 
-        Collection<TopicPartition> allAssignedTopicPartitions = consumer.assignment();
-        final Map<TopicPartition, OffsetAndMetadata> committableOffsets = new HashMap<>(lastCommittedOffsetsForPartitions);
+        final Map<TopicPartition, OffsetAndMetadata> commitableOffsets = new HashMap<>(lastCommittedOffsets);
         for (Map.Entry<TopicPartition, OffsetAndMetadata> taskProvidedOffsetEntry : taskProvidedOffsets.entrySet()) {
             final TopicPartition partition = taskProvidedOffsetEntry.getKey();
             final OffsetAndMetadata taskProvidedOffset = taskProvidedOffsetEntry.getValue();
-            if (committableOffsets.containsKey(partition)) {
+            if (commitableOffsets.containsKey(partition)) {
                 long taskOffset = taskProvidedOffset.offset();
-                long currentOffset = offsetsToCommit.get(partition).offset();
+                long currentOffset = currentOffsets.get(partition).offset();
                 if (taskOffset <= currentOffset) {
-                    committableOffsets.put(partition, taskProvidedOffset);
+                    commitableOffsets.put(partition, taskProvidedOffset);
                 } else {
                     log.warn("{} Ignoring invalid task provided offset {}/{} -- not yet consumed, taskOffset={} currentOffset={}",
-                        this, partition, taskProvidedOffset, taskOffset, currentOffset);
+                            this, partition, taskProvidedOffset, taskOffset, currentOffset);
                 }
-            } else if (!allAssignedTopicPartitions.contains(partition)) {
-                log.warn("{} Ignoring invalid task provided offset {}/{} -- partition not assigned, assignment={}",
-                        this, partition, taskProvidedOffset, allAssignedTopicPartitions);
             } else {
-                log.debug("{} Ignoring task provided offset {}/{} -- partition not requested, requested={}",
-                        this, partition, taskProvidedOffset, committableOffsets.keySet());
+                log.warn("{} Ignoring invalid task provided offset {}/{} -- partition not assigned, assignment={}",
+                        this, partition, taskProvidedOffset, consumer.assignment());
             }
         }
 
-        if (committableOffsets.equals(lastCommittedOffsetsForPartitions)) {
+        if (commitableOffsets.equals(lastCommittedOffsets)) {
             log.debug("{} Skipping offset commit, no change since last commit", this);
             onCommitCompleted(null, commitSeqno, null);
             return;
         }
 
-        doCommit(committableOffsets, closing, commitSeqno);
+        doCommit(commitableOffsets, closing, commitSeqno);
     }
 
 
@@ -502,9 +407,9 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
     }
 
     private ConsumerRecords<byte[], byte[]> pollConsumer(long timeoutMs) {
-        ConsumerRecords<byte[], byte[]> msgs = consumer.poll(Duration.ofMillis(timeoutMs));
+        ConsumerRecords<byte[], byte[]> msgs = consumer.poll(timeoutMs);
 
-        // Exceptions raised from the task during a rebalance should be rethrown to stop the task and mark it as failed
+        // Exceptions raised from the task during a rebalance should be rethrown to stop the worker
         if (rebalanceException != null) {
             RuntimeException e = rebalanceException;
             rebalanceException = null;
@@ -515,91 +420,60 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
         return msgs;
     }
 
+    private KafkaConsumer<byte[], byte[]> createConsumer() {
+        // Include any unknown worker configs so consumer configs can be set globally on the worker
+        // and through to the task
+        Map<String, Object> props = new HashMap<>();
+
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, SinkUtils.consumerGroupId(id.connector()));
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG,
+                Utils.join(workerConfig.getList(WorkerConfig.BOOTSTRAP_SERVERS_CONFIG), ","));
+        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
+        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.ByteArrayDeserializer");
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.ByteArrayDeserializer");
+
+        props.putAll(workerConfig.originalsWithPrefix("consumer."));
+
+        KafkaConsumer<byte[], byte[]> newConsumer;
+        try {
+            newConsumer = new KafkaConsumer<>(props);
+        } catch (Throwable t) {
+            throw new ConnectException("Failed to create consumer", t);
+        }
+
+        return newConsumer;
+    }
+
     private void convertMessages(ConsumerRecords<byte[], byte[]> msgs) {
+        origOffsets.clear();
         for (ConsumerRecord<byte[], byte[]> msg : msgs) {
             log.trace("{} Consuming and converting message in topic '{}' partition {} at offset {} and timestamp {}",
                     this, msg.topic(), msg.partition(), msg.offset(), msg.timestamp());
-
-            ProcessingContext<ConsumerRecord<byte[], byte[]>> context = new ProcessingContext<>(msg);
-
-            SinkRecord transRecord = convertAndTransformRecord(context, msg);
-
+            SchemaAndValue keyAndSchema = keyConverter.toConnectData(msg.topic(), msg.key());
+            SchemaAndValue valueAndSchema = valueConverter.toConnectData(msg.topic(), msg.value());
+            Long timestamp = ConnectUtils.checkAndConvertTimestamp(msg.timestamp());
+            SinkRecord origRecord = new SinkRecord(msg.topic(), msg.partition(),
+                    keyAndSchema.schema(), keyAndSchema.value(),
+                    valueAndSchema.schema(), valueAndSchema.value(),
+                    msg.offset(),
+                    timestamp,
+                    msg.timestampType());
+            log.trace("{} Applying transformations to record in topic '{}' partition {} at offset {} and timestamp {} with key {} and value {}",
+                    this, msg.topic(), msg.partition(), msg.offset(), timestamp, keyAndSchema.value(), valueAndSchema.value());
+            SinkRecord transRecord = transformationChain.apply(origRecord);
             origOffsets.put(
-                    new TopicPartition(msg.topic(), msg.partition()),
-                    new OffsetAndMetadata(msg.offset() + 1)
+                    new TopicPartition(origRecord.topic(), origRecord.kafkaPartition()),
+                    new OffsetAndMetadata(origRecord.kafkaOffset() + 1)
             );
             if (transRecord != null) {
                 messageBatch.add(transRecord);
             } else {
-                log.trace(
-                        "{} Converters and transformations returned null, possibly because of too many retries, so " +
-                                "dropping record in topic '{}' partition {} at offset {}",
-                        this, msg.topic(), msg.partition(), msg.offset()
-                );
+                log.trace("{} Transformations returned null, so dropping record in topic '{}' partition {} at offset {} and timestamp {} with key {} and value {}",
+                        this, msg.topic(), msg.partition(), msg.offset(), timestamp, keyAndSchema.value(), valueAndSchema.value());
             }
         }
         sinkTaskMetricsGroup.recordConsumedOffsets(origOffsets);
-    }
-
-    private SinkRecord convertAndTransformRecord(ProcessingContext<ConsumerRecord<byte[], byte[]>> context, final ConsumerRecord<byte[], byte[]> msg) {
-        SchemaAndValue keyAndSchema = retryWithToleranceOperator.execute(context, () -> {
-            try (LoaderSwap swap = pluginLoaderSwapper.apply(keyConverterPlugin.get().getClass().getClassLoader())) {
-                return keyConverterPlugin.get().toConnectData(msg.topic(), msg.headers(), msg.key());
-            }
-        }, Stage.KEY_CONVERTER, keyConverterPlugin.get().getClass());
-
-        SchemaAndValue valueAndSchema = retryWithToleranceOperator.execute(context, () -> {
-            try (LoaderSwap swap = pluginLoaderSwapper.apply(valueConverterPlugin.get().getClass().getClassLoader())) {
-                return valueConverterPlugin.get().toConnectData(msg.topic(), msg.headers(), msg.value());
-            }
-        }, Stage.VALUE_CONVERTER, valueConverterPlugin.get().getClass());
-
-        Headers headers = retryWithToleranceOperator.execute(context, () -> convertHeadersFor(msg), Stage.HEADER_CONVERTER, headerConverterPlugin.get().getClass());
-
-        if (context.failed()) {
-            return null;
-        }
-
-        Long timestamp = ConnectUtils.checkAndConvertTimestamp(msg.timestamp());
-        SinkRecord origRecord = new SinkRecord(msg.topic(), msg.partition(),
-                keyAndSchema.schema(), keyAndSchema.value(),
-                valueAndSchema.schema(), valueAndSchema.value(),
-                msg.offset(),
-                timestamp,
-                msg.timestampType(),
-                headers);
-        log.trace("{} Applying transformations to record in topic '{}' partition {} at offset {} and timestamp {} with key {} and value {}",
-                this, msg.topic(), msg.partition(), msg.offset(), timestamp, keyAndSchema.value(), valueAndSchema.value());
-        if (isTopicTrackingEnabled) {
-            recordActiveTopic(origRecord.topic());
-        }
-
-        // Apply the transformations
-        SinkRecord transformedRecord = transformationChain.apply(context, origRecord);
-        if (transformedRecord == null) {
-            return null;
-        }
-        // Error reporting will need to correlate each sink record with the original consumer record
-        return new InternalSinkRecord(context, transformedRecord);
-    }
-
-    private Headers convertHeadersFor(ConsumerRecord<byte[], byte[]> record) {
-        Headers result = new ConnectHeaders();
-        org.apache.kafka.common.header.Headers recordHeaders = record.headers();
-        if (recordHeaders != null) {
-            String topic = record.topic();
-            for (org.apache.kafka.common.header.Header recordHeader : recordHeaders) {
-                try (LoaderSwap swap = pluginLoaderSwapper.apply(headerConverterPlugin.get().getClass().getClassLoader())) {
-                    SchemaAndValue schemaAndValue = headerConverterPlugin.get().toConnectHeader(topic, recordHeader.key(), recordHeader.value());
-                    result.add(recordHeader.key(), schemaAndValue);
-                }
-            }
-        }
-        return result;
-    }
-
-    protected WorkerErrantRecordReporter workerErrantRecordReporter() {
-        return workerErrantRecordReporter;
     }
 
     private void resumeAll() {
@@ -619,15 +493,9 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
             log.trace("{} Delivering batch of {} messages to task", this, messageBatch.size());
             long start = time.milliseconds();
             task.put(new ArrayList<>(messageBatch));
-            // if errors raised from the operator were swallowed by the task implementation, an
-            // exception needs to be thrown to kill the task indicating the tolerance was exceeded
-            if (workerErrantRecordReporter != null) {
-                workerErrantRecordReporter.maybeThrowAsyncError();
-            }
             recordBatch(messageBatch.size());
             sinkTaskMetricsGroup.recordPut(time.milliseconds() - start);
             currentOffsets.putAll(origOffsets);
-            origOffsets.clear();
             messageBatch.clear();
             // If we had paused all consumer topic partitions to try to redeliver data, then we should resume any that
             // the task had not explicitly paused
@@ -638,16 +506,14 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
             }
         } catch (RetriableException e) {
             log.error("{} RetriableException from SinkTask:", this, e);
-            if (!pausedForRedelivery) {
-                // If we're retrying a previous batch, make sure we've paused all topic partitions so we don't get new data,
-                // but will still be able to poll in order to handle user-requested timeouts, keep group membership, etc.
-                pausedForRedelivery = true;
-                pauseAll();
-            }
+            // If we're retrying a previous batch, make sure we've paused all topic partitions so we don't get new data,
+            // but will still be able to poll in order to handle user-requested timeouts, keep group membership, etc.
+            pausedForRedelivery = true;
+            pauseAll();
             // Let this exit normally, the batch will be reprocessed on the next loop.
         } catch (Throwable t) {
             log.error("{} Task threw an uncaught and unrecoverable exception. Task is being killed and will not "
-                    + "recover until manually restarted. Error: {}", this, t.getMessage(), t);
+                    + "recover until manually restarted.", this, t);
             throw new ConnectException("Exiting WorkerSinkTask due to unrecoverable exception.", t);
         }
     }
@@ -673,38 +539,24 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
     }
 
     private void openPartitions(Collection<TopicPartition> partitions) {
+        sinkTaskMetricsGroup.recordPartitionCount(partitions.size());
         task.open(partitions);
     }
 
-    private void closeAllPartitions() {
-        closePartitions(currentOffsets.keySet(), false);
-    }
-
-    private void closePartitions(Collection<TopicPartition> topicPartitions, boolean lost) {
-        if (!lost) {
-            commitOffsets(time.milliseconds(), true, topicPartitions);
-        } else {
-            log.trace("{} Closing the task as partitions have been lost: {}", this, topicPartitions);
-            task.close(topicPartitions);
-            if (workerErrantRecordReporter != null) {
-                log.trace("Cancelling reported errors for {}", topicPartitions);
-                workerErrantRecordReporter.cancelFutures(topicPartitions);
-                log.trace("Cancelled all reported errors for {}", topicPartitions);
-            }
-            origOffsets.keySet().removeAll(topicPartitions);
-            currentOffsets.keySet().removeAll(topicPartitions);
-        }
-        lastCommittedOffsets.keySet().removeAll(topicPartitions);
-    }
-
-    private void updatePartitionCount() {
-        sinkTaskMetricsGroup.recordPartitionCount(consumer.assignment().size());
+    private void closePartitions() {
+        commitOffsets(time.milliseconds(), true);
+        sinkTaskMetricsGroup.recordPartitionCount(0);
     }
 
     @Override
     protected void recordBatch(int size) {
         super.recordBatch(size);
         sinkTaskMetricsGroup.recordSend(size);
+    }
+
+    @Override
+    protected void recordCommitFailure(long duration, Throwable error) {
+        super.recordCommitFailure(duration, error);
     }
 
     @Override
@@ -717,47 +569,31 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
         return sinkTaskMetricsGroup;
     }
 
-    // Visible for testing
-    long getNextCommit() {
-        return nextCommit;
-    }
-
     private class HandleRebalance implements ConsumerRebalanceListener {
         @Override
         public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
-            log.debug("{} Partitions assigned {}", WorkerSinkTask.this, partitions);
-
+            log.debug("{} Partitions assigned", WorkerSinkTask.this);
+            lastCommittedOffsets = new HashMap<>();
+            currentOffsets = new HashMap<>();
             for (TopicPartition tp : partitions) {
                 long pos = consumer.position(tp);
                 lastCommittedOffsets.put(tp, new OffsetAndMetadata(pos));
                 currentOffsets.put(tp, new OffsetAndMetadata(pos));
-                log.debug("{} Assigned topic partition {} with offset {}", WorkerSinkTask.this, tp, pos);
+                log.debug("{} Assigned topic partition {} with offset {}", this, tp, pos);
             }
             sinkTaskMetricsGroup.assignedOffsets(currentOffsets);
 
-            boolean wasPausedForRedelivery = pausedForRedelivery;
-            pausedForRedelivery = wasPausedForRedelivery && !messageBatch.isEmpty();
-            if (pausedForRedelivery) {
-                // Re-pause here in case we picked up new partitions in the rebalance
+            // If we paused everything for redelivery (which is no longer relevant since we discarded the data), make
+            // sure anything we paused that the task didn't request to be paused *and* which we still own is resumed.
+            // Also make sure our tracking of paused partitions is updated to remove any partitions we no longer own.
+            pausedForRedelivery = false;
+
+            // Ensure that the paused partitions contains only assigned partitions and repause as necessary
+            context.pausedPartitions().retainAll(partitions);
+            if (shouldPause())
                 pauseAll();
-            } else {
-                // If we paused everything for redelivery and all partitions for the failed deliveries have been revoked, make
-                // sure anything we paused that the task didn't request to be paused *and* which we still own is resumed.
-                // Also make sure our tracking of paused partitions is updated to remove any partitions we no longer own.
-                if (wasPausedForRedelivery) {
-                    resumeAll();
-                }
-                // Ensure that the paused partitions contains only assigned partitions and repause as necessary
-                context.pausedPartitions().retainAll(consumer.assignment());
-                if (shouldPause())
-                    pauseAll();
-                else if (!context.pausedPartitions().isEmpty())
-                    consumer.pause(context.pausedPartitions());
-            }
-            updatePartitionCount();
-            if (partitions.isEmpty()) {
-                return;
-            }
+            else if (!context.pausedPartitions().isEmpty())
+                consumer.pause(context.pausedPartitions());
 
             // Instead of invoking the assignment callback on initialization, we guarantee the consumer is ready upon
             // task start. Since this callback gets invoked during that initial setup before we've started the task, we
@@ -777,39 +613,24 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
 
         @Override
         public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
-            onPartitionsRemoved(partitions, false);
-        }
-
-        @Override
-        public void onPartitionsLost(Collection<TopicPartition> partitions) {
-            onPartitionsRemoved(partitions, true);
-        }
-
-        private void onPartitionsRemoved(Collection<TopicPartition> partitions, boolean lost) {
-            if (taskStopped) {
-                log.trace("Skipping partition revocation callback as task has already been stopped");
-                return;
-            }
-            log.debug("{} Partitions {}: {}", WorkerSinkTask.this, lost ? "lost" : "revoked", partitions);
-
-            if (partitions.isEmpty())
-                return;
-
+            log.debug("{} Partitions revoked", WorkerSinkTask.this);
             try {
-                closePartitions(partitions, lost);
-                sinkTaskMetricsGroup.clearOffsets(partitions);
+                closePartitions();
+                sinkTaskMetricsGroup.clearOffsets();
             } catch (RuntimeException e) {
                 // The consumer swallows exceptions raised in the rebalance listener, so we need to store
                 // exceptions and rethrow when poll() returns.
                 rebalanceException = e;
             }
 
-            // Make sure we don't have any leftover data since offsets for these partitions will be reset to committed positions
-            messageBatch.removeIf(record -> partitions.contains(new TopicPartition(record.topic(), record.kafkaPartition())));
+            // Make sure we don't have any leftover data since offsets will be reset to committed positions
+            messageBatch.clear();
         }
     }
 
     static class SinkTaskMetricsGroup {
+        private final ConnectorTaskId id;
+        private final ConnectMetrics metrics;
         private final MetricGroup metricGroup;
         private final Sensor sinkRecordRead;
         private final Sensor sinkRecordSend;
@@ -819,46 +640,47 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
         private final Sensor offsetCompletionSkip;
         private final Sensor putBatchTime;
         private final Sensor sinkRecordActiveCount;
+        private long activeRecords;
         private Map<TopicPartition, OffsetAndMetadata> consumedOffsets = new HashMap<>();
         private Map<TopicPartition, OffsetAndMetadata> committedOffsets = new HashMap<>();
 
         public SinkTaskMetricsGroup(ConnectorTaskId id, ConnectMetrics connectMetrics) {
+            this.metrics = connectMetrics;
+            this.id = id;
 
             ConnectMetricsRegistry registry = connectMetrics.registry();
             metricGroup = connectMetrics
                                   .group(registry.sinkTaskGroupName(), registry.connectorTagName(), id.connector(), registry.taskTagName(),
                                          Integer.toString(id.task()));
-            // prevent collisions by removing any previously created metrics in this group.
-            metricGroup.close();
 
-            sinkRecordRead = metricGroup.sensor("sink-record-read");
+            sinkRecordRead = metricGroup.metrics().sensor("sink-record-read");
             sinkRecordRead.add(metricGroup.metricName(registry.sinkRecordReadRate), new Rate());
-            sinkRecordRead.add(metricGroup.metricName(registry.sinkRecordReadTotal), new CumulativeSum());
+            sinkRecordRead.add(metricGroup.metricName(registry.sinkRecordReadTotal), new Total());
 
-            sinkRecordSend = metricGroup.sensor("sink-record-send");
+            sinkRecordSend = metricGroup.metrics().sensor("sink-record-send");
             sinkRecordSend.add(metricGroup.metricName(registry.sinkRecordSendRate), new Rate());
-            sinkRecordSend.add(metricGroup.metricName(registry.sinkRecordSendTotal), new CumulativeSum());
+            sinkRecordSend.add(metricGroup.metricName(registry.sinkRecordSendTotal), new Total());
 
-            sinkRecordActiveCount = metricGroup.sensor("sink-record-active-count");
+            sinkRecordActiveCount = metricGroup.metrics().sensor("sink-record-active-count");
             sinkRecordActiveCount.add(metricGroup.metricName(registry.sinkRecordActiveCount), new Value());
             sinkRecordActiveCount.add(metricGroup.metricName(registry.sinkRecordActiveCountMax), new Max());
             sinkRecordActiveCount.add(metricGroup.metricName(registry.sinkRecordActiveCountAvg), new Avg());
 
-            partitionCount = metricGroup.sensor("partition-count");
+            partitionCount = metricGroup.metrics().sensor("partition-count");
             partitionCount.add(metricGroup.metricName(registry.sinkRecordPartitionCount), new Value());
 
-            offsetSeqNum = metricGroup.sensor("offset-seq-number");
+            offsetSeqNum = metricGroup.metrics().sensor("offset-seq-number");
             offsetSeqNum.add(metricGroup.metricName(registry.sinkRecordOffsetCommitSeqNum), new Value());
 
-            offsetCompletion = metricGroup.sensor("offset-commit-completion");
+            offsetCompletion = metricGroup.metrics().sensor("offset-commit-completion");
             offsetCompletion.add(metricGroup.metricName(registry.sinkRecordOffsetCommitCompletionRate), new Rate());
-            offsetCompletion.add(metricGroup.metricName(registry.sinkRecordOffsetCommitCompletionTotal), new CumulativeSum());
+            offsetCompletion.add(metricGroup.metricName(registry.sinkRecordOffsetCommitCompletionTotal), new Total());
 
-            offsetCompletionSkip = metricGroup.sensor("offset-commit-completion-skip");
+            offsetCompletionSkip = metricGroup.metrics().sensor("offset-commit-completion-skip");
             offsetCompletionSkip.add(metricGroup.metricName(registry.sinkRecordOffsetCommitSkipRate), new Rate());
-            offsetCompletionSkip.add(metricGroup.metricName(registry.sinkRecordOffsetCommitSkipTotal), new CumulativeSum());
+            offsetCompletionSkip.add(metricGroup.metricName(registry.sinkRecordOffsetCommitSkipTotal), new Total());
 
-            putBatchTime = metricGroup.sensor("put-batch-time");
+            putBatchTime = metricGroup.metrics().sensor("put-batch-time");
             putBatchTime.add(metricGroup.metricName(registry.sinkRecordPutBatchTimeMax), new Max());
             putBatchTime.add(metricGroup.metricName(registry.sinkRecordPutBatchTimeAvg), new Avg());
         }
@@ -866,7 +688,7 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
         void computeSinkRecordLag() {
             Map<TopicPartition, OffsetAndMetadata> consumed = this.consumedOffsets;
             Map<TopicPartition, OffsetAndMetadata> committed = this.committedOffsets;
-            long activeRecords = 0L;
+            activeRecords = 0L;
             for (Map.Entry<TopicPartition, OffsetAndMetadata> committedOffsetEntry : committed.entrySet()) {
                 final TopicPartition partition = committedOffsetEntry.getKey();
                 final OffsetAndMetadata consumedOffsetMeta = consumed.get(partition);
@@ -919,13 +741,13 @@ class WorkerSinkTask extends WorkerTask<ConsumerRecord<byte[], byte[]>, SinkReco
         void assignedOffsets(Map<TopicPartition, OffsetAndMetadata> offsets) {
             consumedOffsets = new HashMap<>(offsets);
             committedOffsets = offsets;
-            computeSinkRecordLag();
+            sinkRecordActiveCount.record(0.0);
         }
 
-        void clearOffsets(Collection<TopicPartition> topicPartitions) {
-            consumedOffsets.keySet().removeAll(topicPartitions);
-            committedOffsets.keySet().removeAll(topicPartitions);
-            computeSinkRecordLag();
+        void clearOffsets() {
+            consumedOffsets.clear();
+            committedOffsets.clear();
+            sinkRecordActiveCount.record(0.0);
         }
 
         void recordOffsetCommitSuccess() {

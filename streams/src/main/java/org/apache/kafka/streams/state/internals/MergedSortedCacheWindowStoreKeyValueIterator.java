@@ -17,7 +17,6 @@
 
 package org.apache.kafka.streams.state.internals;
 
-import org.apache.kafka.common.serialization.Deserializer;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.streams.KeyValue;
 import org.apache.kafka.streams.kstream.Windowed;
@@ -30,37 +29,18 @@ class MergedSortedCacheWindowStoreKeyValueIterator
     private final StateSerdes<Bytes, byte[]> serdes;
     private final long windowSize;
     private final SegmentedCacheFunction cacheFunction;
-    private final StoreKeyToWindowKey storeKeyToWindowKey;
-    private final WindowKeyToBytes windowKeyToBytes;
 
     MergedSortedCacheWindowStoreKeyValueIterator(
         final PeekingKeyValueIterator<Bytes, LRUCacheEntry> filteredCacheIterator,
         final KeyValueIterator<Windowed<Bytes>, byte[]> underlyingIterator,
         final StateSerdes<Bytes, byte[]> serdes,
         final long windowSize,
-        final SegmentedCacheFunction cacheFunction,
-        final boolean forward
+        final SegmentedCacheFunction cacheFunction
     ) {
-        this(filteredCacheIterator, underlyingIterator, serdes,
-            windowSize, cacheFunction, forward, WindowKeySchema::fromStoreKey, WindowKeySchema::toStoreKeyBinary);
-    }
-
-    MergedSortedCacheWindowStoreKeyValueIterator(
-        final PeekingKeyValueIterator<Bytes, LRUCacheEntry> filteredCacheIterator,
-        final KeyValueIterator<Windowed<Bytes>, byte[]> underlyingIterator,
-        final StateSerdes<Bytes, byte[]> serdes,
-        final long windowSize,
-        final SegmentedCacheFunction cacheFunction,
-        final boolean forward,
-        final StoreKeyToWindowKey storeKeyToWindowKey,
-        final WindowKeyToBytes windowKeyToBytes
-    ) {
-        super(filteredCacheIterator, underlyingIterator, forward);
+        super(filteredCacheIterator, underlyingIterator);
         this.serdes = serdes;
         this.windowSize = windowSize;
         this.cacheFunction = cacheFunction;
-        this.storeKeyToWindowKey = storeKeyToWindowKey;
-        this.windowKeyToBytes = windowKeyToBytes;
     }
 
     @Override
@@ -75,28 +55,21 @@ class MergedSortedCacheWindowStoreKeyValueIterator
 
     @Override
     Windowed<Bytes> deserializeCacheKey(final Bytes cacheKey) {
-        final byte[] binaryKey = cacheFunction.key(cacheKey).get();
-        return storeKeyToWindowKey.toWindowKey(binaryKey, windowSize, serdes.keyDeserializer(), serdes.topic());
+        byte[] binaryKey = cacheFunction.key(cacheKey).get();
+
+        final long timestamp = WindowStoreUtils.timestampFromBinaryKey(binaryKey);
+        final Bytes key = WindowStoreUtils.keyFromBinaryKey(binaryKey, serdes);
+        return new Windowed<>(key, WindowStoreUtils.timeWindowForSize(timestamp, windowSize));
     }
 
     @Override
     byte[] deserializeCacheValue(final LRUCacheEntry cacheEntry) {
-        return cacheEntry.value();
+        return cacheEntry.value;
     }
 
     @Override
     int compare(final Bytes cacheKey, final Windowed<Bytes> storeKey) {
-        final Bytes storeKeyBytes = windowKeyToBytes.toBytes(storeKey.key(), storeKey.window().start(), 0);
+        Bytes storeKeyBytes = WindowStoreUtils.toBinaryKey(storeKey.key().get(), storeKey.window().start(), 0);
         return cacheFunction.compareSegmentedKeys(cacheKey, storeKeyBytes);
-    }
-
-    @FunctionalInterface
-    interface StoreKeyToWindowKey {
-        Windowed<Bytes> toWindowKey(final byte[] binaryKey, final long windowSize, final Deserializer<Bytes> deserializer, final String topic);
-    }
-
-    @FunctionalInterface
-    interface WindowKeyToBytes {
-        Bytes toBytes(final Bytes key, final long windowStart, final int seqNum);
     }
 }

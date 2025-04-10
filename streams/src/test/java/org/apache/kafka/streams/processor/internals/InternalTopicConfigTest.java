@@ -16,126 +16,112 @@
  */
 package org.apache.kafka.streams.processor.internals;
 
-import org.apache.kafka.common.config.TopicConfig;
 import org.apache.kafka.common.errors.InvalidTopicException;
-
-import org.junit.jupiter.api.Test;
+import org.apache.kafka.common.utils.Utils;
+import org.junit.Test;
 
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Properties;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 public class InternalTopicConfigTest {
 
     @Test
-    public void shouldThrowNpeIfTopicConfigIsNull() {
-        assertThrows(NullPointerException.class, () -> new RepartitionTopicConfig("topic", null));
+    public void shouldHaveCompactionPropSetIfSupplied() {
+        final Properties properties = new InternalTopicConfig("name",
+                                                              Collections.singleton(InternalTopicConfig.CleanupPolicy.compact),
+                                                              Collections.<String, String>emptyMap()).toProperties(0);
+        assertEquals("compact", properties.getProperty(InternalTopicManager.CLEANUP_POLICY_PROP));
     }
 
-    @Test
+
+    @Test(expected = NullPointerException.class)
     public void shouldThrowIfNameIsNull() {
-        assertThrows(NullPointerException.class, () -> new RepartitionTopicConfig(null, Collections.emptyMap()));
+        new InternalTopicConfig(null, Collections.singleton(InternalTopicConfig.CleanupPolicy.compact), Collections.<String, String>emptyMap());
     }
 
-    @Test
+    @Test(expected = InvalidTopicException.class)
     public void shouldThrowIfNameIsInvalid() {
-        assertThrows(InvalidTopicException.class, () -> new RepartitionTopicConfig("foo bar baz", Collections.emptyMap()));
+        new InternalTopicConfig("foo bar baz", Collections.singleton(InternalTopicConfig.CleanupPolicy.compact), Collections.<String, String>emptyMap());
     }
 
     @Test
-    public void shouldSetCreateTimeByDefaultForWindowedChangelog() {
-        final WindowedChangelogTopicConfig topicConfig = new WindowedChangelogTopicConfig("name", Collections.emptyMap(), 10);
-
-        final Map<String, String> properties = topicConfig.properties(Collections.emptyMap(), 0);
-        assertEquals("CreateTime", properties.get(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG));
+    public void shouldConfigureRetentionMsWithAdditionalRetentionWhenCompactAndDelete() {
+        final InternalTopicConfig topicConfig = new InternalTopicConfig("name",
+                                                                        Utils.mkSet(InternalTopicConfig.CleanupPolicy.compact, InternalTopicConfig.CleanupPolicy.delete),
+                                                                        Collections.<String, String>emptyMap());
+        final int additionalRetentionMs = 20;
+        topicConfig.setRetentionMs(10);
+        final Properties properties = topicConfig.toProperties(additionalRetentionMs);
+        assertEquals("30", properties.getProperty(InternalTopicManager.RETENTION_MS));
     }
 
     @Test
-    public void shouldSetCreateTimeByDefaultForUnwindowedUnversionedChangelog() {
-        final UnwindowedUnversionedChangelogTopicConfig topicConfig = new UnwindowedUnversionedChangelogTopicConfig("name", Collections.emptyMap());
-
-        final Map<String, String> properties = topicConfig.properties(Collections.emptyMap(), 0);
-        assertEquals("CreateTime", properties.get(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG));
+    public void shouldNotConfigureRetentionMsWhenCompact() {
+        final InternalTopicConfig topicConfig = new InternalTopicConfig("name",
+                                                                        Collections.singleton(InternalTopicConfig.CleanupPolicy.compact),
+                                                                        Collections.<String, String>emptyMap());
+        topicConfig.setRetentionMs(10);
+        final Properties properties = topicConfig.toProperties(0);
+        assertNull(null, properties.getProperty(InternalTopicManager.RETENTION_MS));
     }
 
     @Test
-    public void shouldSetCreateTimeByDefaultForVersionedChangelog() {
-        final VersionedChangelogTopicConfig topicConfig = new VersionedChangelogTopicConfig("name", Collections.emptyMap(), 12);
+    public void shouldNotConfigureRetentionMsWhenDelete() {
+        final InternalTopicConfig topicConfig = new InternalTopicConfig("name",
+                                                                        Collections.singleton(InternalTopicConfig.CleanupPolicy.delete),
+                                                                        Collections.<String, String>emptyMap());
+        topicConfig.setRetentionMs(10);
+        final Properties properties = topicConfig.toProperties(0);
+        assertNull(null, properties.getProperty(InternalTopicManager.RETENTION_MS));
+    }
 
-        final Map<String, String> properties = topicConfig.properties(Collections.emptyMap(), 0);
-        assertEquals("CreateTime", properties.get(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG));
+
+    @Test
+    public void shouldBeCompactedIfCleanupPolicyCompactOrCompactAndDelete() {
+        assertTrue(new InternalTopicConfig("name",
+                                           Collections.singleton(InternalTopicConfig.CleanupPolicy.compact),
+                                           Collections.<String, String>emptyMap()).isCompacted());
+        assertTrue(new InternalTopicConfig("name", Utils.mkSet(InternalTopicConfig.CleanupPolicy.compact,
+                                                               InternalTopicConfig.CleanupPolicy.delete),
+                                           Collections.<String, String>emptyMap()).isCompacted());
     }
 
     @Test
-    public void shouldSetCreateTimeByDefaultForRepartitionTopic() {
-        final RepartitionTopicConfig topicConfig = new RepartitionTopicConfig("name", Collections.emptyMap());
-
-        final Map<String, String> properties = topicConfig.properties(Collections.emptyMap(), 0);
-        assertEquals("CreateTime", properties.get(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG));
+    public void shouldNotBeCompactedWhenCleanupPolicyIsDelete() {
+        assertFalse(new InternalTopicConfig("name",
+                                            Collections.singleton(InternalTopicConfig.CleanupPolicy.delete),
+                                            Collections.<String, String>emptyMap()).isCompacted());
     }
 
     @Test
-    public void shouldAugmentRetentionMsWithWindowedChangelog() {
-        final WindowedChangelogTopicConfig topicConfig = new WindowedChangelogTopicConfig("name", Collections.emptyMap(), 10);
-        assertEquals("30", topicConfig.properties(Collections.emptyMap(), 20).get(TopicConfig.RETENTION_MS_CONFIG));
+    public void shouldUseCleanupPolicyFromConfigIfSupplied() {
+        final InternalTopicConfig config = new InternalTopicConfig("name",
+                                                                   Collections.singleton(InternalTopicConfig.CleanupPolicy.delete),
+                                                                   Collections.singletonMap("cleanup.policy", "compact"));
+
+        final Properties properties = config.toProperties(0);
+        assertEquals("compact", properties.getProperty("cleanup.policy"));
     }
 
     @Test
-    public void shouldAugmentCompactionLagMsWithVersionedChangelog() {
-        final VersionedChangelogTopicConfig topicConfig = new VersionedChangelogTopicConfig("name", Collections.emptyMap(), 12);
-        assertEquals(Long.toString(12 + 24 * 60 * 60 * 1000L), topicConfig.properties(Collections.emptyMap(), 20).get(TopicConfig.MIN_COMPACTION_LAG_MS_CONFIG));
-    }
-
-    @Test
-    public void shouldUseSuppliedConfigsForWindowedChangelogConfig() {
-        final Map<String, String> configs = new HashMap<>();
-        configs.put("message.timestamp.type", "LogAppendTime");
-
-        final WindowedChangelogTopicConfig topicConfig = new WindowedChangelogTopicConfig("name", configs, 10);
-
-        final Map<String, String> properties = topicConfig.properties(Collections.emptyMap(), 0);
-        assertEquals("LogAppendTime", properties.get(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG));
-    }
-
-    @Test
-    public void shouldUseSuppliedConfigsForVersionedChangelogConfig() {
-        final Map<String, String> configs = new HashMap<>();
-        configs.put("message.timestamp.type", "LogAppendTime");
-
-        final VersionedChangelogTopicConfig topicConfig = new VersionedChangelogTopicConfig("name", configs, 12);
-
-        final Map<String, String> properties = topicConfig.properties(Collections.emptyMap(), 0);
-        assertEquals("LogAppendTime", properties.get(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG));
-    }
-
-    @Test
-    public void shouldUseSuppliedConfigsForUnwindowedUnversionedChangelogConfig() {
+    public void shouldHavePropertiesSuppliedByUser() {
         final Map<String, String> configs = new HashMap<>();
         configs.put("retention.ms", "1000");
         configs.put("retention.bytes", "10000");
-        configs.put("message.timestamp.type", "LogAppendTime");
 
-        final UnwindowedUnversionedChangelogTopicConfig topicConfig = new UnwindowedUnversionedChangelogTopicConfig("name", configs);
+        final InternalTopicConfig topicConfig = new InternalTopicConfig("name",
+                                                                 Collections.singleton(InternalTopicConfig.CleanupPolicy.delete),
+                                                                 configs);
 
-        final Map<String, String> properties = topicConfig.properties(Collections.emptyMap(), 0);
-        assertEquals("1000", properties.get(TopicConfig.RETENTION_MS_CONFIG));
-        assertEquals("10000", properties.get(TopicConfig.RETENTION_BYTES_CONFIG));
-        assertEquals("LogAppendTime", properties.get(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG));
-    }
-
-    @Test
-    public void shouldUseSuppliedConfigsForRepartitionConfig() {
-        final Map<String, String> configs = new HashMap<>();
-        configs.put("retention.ms", "1000");
-        configs.put("message.timestamp.type", "LogAppendTime");
-
-        final RepartitionTopicConfig topicConfig = new RepartitionTopicConfig("name", configs);
-
-        final Map<String, String> properties = topicConfig.properties(Collections.emptyMap(), 0);
-        assertEquals("1000", properties.get(TopicConfig.RETENTION_MS_CONFIG));
-        assertEquals("LogAppendTime", properties.get(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG));
+        final Properties properties = topicConfig.toProperties(0);
+        assertEquals("1000", properties.getProperty("retention.ms"));
+        assertEquals("10000", properties.getProperty("retention.bytes"));
     }
 }

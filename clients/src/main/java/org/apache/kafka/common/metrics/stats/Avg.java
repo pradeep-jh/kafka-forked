@@ -16,9 +16,9 @@
  */
 package org.apache.kafka.common.metrics.stats;
 
-import org.apache.kafka.common.metrics.MetricConfig;
-
 import java.util.List;
+
+import org.apache.kafka.common.metrics.MetricConfig;
 
 /**
  * A {@link SampledStat} that maintains a simple average over its samples.
@@ -42,7 +42,7 @@ public class Avg extends SampledStat {
             total += s.value;
             count += s.eventCount;
         }
-        return count == 0 ? Double.NaN : total / count;
+        return count == 0 ? 0 : total / count;
     }
 
 }

@@ -1,12 +1,10 @@
 dist
 *classes
-*.class
 target/
 build/
 build_eclipse/
 out/
 .gradle/
-.vscode/
 lib_managed/
 src_managed/
 project/boot/
@@ -34,7 +32,9 @@ Vagrantfile.local
 
 config/server-*
 config/zookeeper-*
-gradle/wrapper/*.jar
+core/data/*
+gradle/wrapper/*
+gradlew
 gradlew.bat
 
 results
@@ -47,17 +47,3 @@ tests/venv
 docs/generated/
 
 .release-settings.json
-
-kafkatest.egg-info/
-systest/
-*.swp
-jmh-benchmarks/generated
-jmh-benchmarks/src/main/generated
-**/.jqwik-database
-**/src/generated
-**/src/generated-test
-storage/kafka-tiered-storage/
-
-docker/test/report_*.html
-kafka.Kafka
-__pycache__

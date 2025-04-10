@@ -59,27 +59,16 @@ public class Decimal {
     }
 
     /**
-     * Convert a value from its logical format ({@link BigDecimal}) to its encoded format (byte[]).
+     * Convert a value from its logical format (BigDecimal) to it's encoded format.
      * @param value the logical value
      * @return the encoded value
      */
     public static byte[] fromLogical(Schema schema, BigDecimal value) {
-        int schemaScale = scale(schema);
-        if (value.scale() != schemaScale)
-            throw new DataException(String.format(
-                "Decimal value has mismatching scale for given Decimal schema. "
-                    + "Schema has scale %d, value has scale %d.",
-                schemaScale,
-                value.scale()
-            ));
+        if (value.scale() != scale(schema))
+            throw new DataException("BigDecimal has mismatching scale value for given Decimal schema");
         return value.unscaledValue().toByteArray();
     }
 
-    /**
-     * Convert a value from its encoded format (byte[]) to its logical format ({@link BigDecimal}).
-     * @param value the encoded value
-     * @return the logical value
-     */
     public static BigDecimal toLogical(Schema schema, byte[] value) {
         return new BigDecimal(new BigInteger(value), scale(schema));
     }

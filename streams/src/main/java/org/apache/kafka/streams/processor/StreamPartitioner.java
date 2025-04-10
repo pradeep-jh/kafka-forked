@@ -16,14 +16,11 @@
  */
 package org.apache.kafka.streams.processor;
 
-import org.apache.kafka.streams.Topology;
-
-import java.util.Optional;
-import java.util.Set;
+import org.apache.kafka.clients.producer.internals.DefaultPartitioner;
 
 /**
  * Determine how records are distributed among the partitions in a Kafka topic. If not specified, the underlying producer's
- * default partitioning strategy will be used to determine the partition.
+ * {@link DefaultPartitioner} will be used to determine the partition.
  * <p>
  * Kafka topics are divided into one or more <i>partitions</i>. Since each partition must fit on the servers that host it, so
  * using multiple partitions allows the topic to scale beyond a size that will fit on a single machine. Partitions also enable you
@@ -39,31 +36,26 @@ import java.util.Set;
  * determine to which partition each record should be written.
  * <p>
  * To do this, create a <code>StreamPartitioner</code> implementation, and when you build your topology specify that custom partitioner
- * when {@link Topology#addSink(String, String, org.apache.kafka.common.serialization.Serializer, org.apache.kafka.common.serialization.Serializer, StreamPartitioner, String...) adding a sink}
+ * when {@link TopologyBuilder#addSink(String, String, org.apache.kafka.common.serialization.Serializer, org.apache.kafka.common.serialization.Serializer, StreamPartitioner, String...) adding a sink}
  * for that topic.
  * <p>
  * All StreamPartitioner implementations should be stateless and a pure function so they can be shared across topic and sink nodes.
  * 
  * @param <K> the type of keys
  * @param <V> the type of values
- * @see Topology#addSink(String, String, org.apache.kafka.common.serialization.Serializer,
+ * @see TopologyBuilder#addSink(String, String, org.apache.kafka.common.serialization.Serializer,
  *      org.apache.kafka.common.serialization.Serializer, StreamPartitioner, String...)
- * @see Topology#addSink(String, String, StreamPartitioner, String...)
+ * @see TopologyBuilder#addSink(String, String, StreamPartitioner, String...)
  */
-@FunctionalInterface
 public interface StreamPartitioner<K, V> {
 
     /**
-     * Determine the number(s) of the partition(s) to which a record with the given key and value should be sent, 
-     * for the given topic and current partition count
-     * @param topic the topic name this record is sent to
+     * Determine the partition number for a record with the given key and value and the current number of partitions.
+     * 
      * @param key the key of the record
      * @param value the value of the record
      * @param numPartitions the total number of partitions
-     * @return an Optional of Set of integers between 0 and {@code numPartitions-1},
-     * Empty optional means using default partitioner
-     * Optional of an empty set means the record won't be sent to any partitions i.e drop it.
-     * Optional of Set of integers means the partitions to which the record should be sent to.
-     * */
-    Optional<Set<Integer>> partitions(String topic, K key, V value, int numPartitions);
+     * @return an integer between 0 and {@code numPartitions-1}, or {@code null} if the default partitioning logic should be used
+     */
+    Integer partition(K key, V value, int numPartitions);
 }

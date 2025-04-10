@@ -17,11 +17,13 @@
 
 package org.apache.kafka.clients.admin;
 
+import org.apache.kafka.common.annotation.InterfaceStability;
 import java.util.Map;
 
 /**
- * Options for {@link Admin#alterReplicaLogDirs(Map, AlterReplicaLogDirsOptions)}.
+ * Options for {@link AdminClient#alterReplicaLogDirs(Map, AlterReplicaLogDirsOptions)}.
  */
+@InterfaceStability.Evolving
 public class AlterReplicaLogDirsOptions extends AbstractOptions<AlterReplicaLogDirsOptions> {
 
 }

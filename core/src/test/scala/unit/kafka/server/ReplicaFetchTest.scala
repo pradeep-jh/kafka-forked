@@ -17,42 +17,46 @@
 
 package kafka.server
 
-import org.junit.jupiter.api.AfterEach
+import org.junit.{After, Before, Test}
+import kafka.zk.ZooKeeperTestHarness
 import kafka.utils.TestUtils
 import TestUtils._
-import kafka.api.IntegrationTestHarness
 import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.serialization.StringSerializer
-import org.junit.jupiter.params.ParameterizedTest
-import org.junit.jupiter.params.provider.ValueSource
 
-class ReplicaFetchTest extends IntegrationTestHarness {
+class ReplicaFetchTest extends ZooKeeperTestHarness  {
+  var brokers: Seq[KafkaServer] = null
   val topic1 = "foo"
   val topic2 = "bar"
 
-  @AfterEach
-  override def tearDown(): Unit = {
+  @Before
+  override def setUp() {
+    super.setUp()
+    val props = createBrokerConfigs(2, zkConnect)
+    brokers = props.map(KafkaConfig.fromProps).map(TestUtils.createServer(_))
+  }
+
+  @After
+  override def tearDown() {
     TestUtils.shutdownServers(brokers)
     super.tearDown()
   }
 
-  override def brokerCount: Int = 2
-
-  @ParameterizedTest
-  @ValueSource(strings = Array("kraft"))
-  def testReplicaFetcherThread(quorum: String): Unit = {
+  @Test
+  def testReplicaFetcherThread() {
     val partition = 0
     val testMessageList1 = List("test1", "test2", "test3", "test4")
     val testMessageList2 = List("test5", "test6", "test7", "test8")
 
     // create a topic and partition and await leadership
     for (topic <- List(topic1,topic2)) {
-      createTopic(topic, replicationFactor = 2)
+      createTopic(zkUtils, topic, numPartitions = 1, replicationFactor = 2, servers = brokers)
     }
 
     // send test messages to leader
-    val producer = TestUtils.createProducer(TestUtils.plaintextBootstrapServers(brokers),
+    val producer = TestUtils.createNewProducer(TestUtils.getBrokerListStrFromServers(brokers),
+                                               retries = 5,
                                                keySerializer = new StringSerializer,
                                                valueSerializer = new StringSerializer)
     val records = testMessageList1.map(m => new ProducerRecord(topic1, m, m)) ++
@@ -64,9 +68,9 @@ class ReplicaFetchTest extends IntegrationTestHarness {
       var result = true
       for (topic <- List(topic1, topic2)) {
         val tp = new TopicPartition(topic, partition)
-        val expectedOffset = brokers.head.logManager.getLog(tp).get.logEndOffset
+        val expectedOffset = brokers.head.getLogManager().getLog(tp).get.logEndOffset
         result = result && expectedOffset > 0 && brokers.forall { item =>
-          expectedOffset == item.logManager.getLog(tp).get.logEndOffset
+          expectedOffset == item.getLogManager().getLog(tp).get.logEndOffset
         }
       }
       result

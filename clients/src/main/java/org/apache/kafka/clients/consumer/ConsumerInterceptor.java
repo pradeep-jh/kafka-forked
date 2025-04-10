@@ -35,18 +35,14 @@ import java.util.Map;
  * the user configures the interceptor with the wrong key and value type parameters, the consumer will not throw an exception,
  * just log the errors.
  * <p>
- * ConsumerInterceptor callbacks are called from the same thread that invokes
- * {@link org.apache.kafka.clients.consumer.KafkaConsumer#poll(java.time.Duration)}.
+ * ConsumerInterceptor callbacks are called from the same thread that invokes {@link org.apache.kafka.clients.consumer.KafkaConsumer#poll(long)}.
  * <p>
  * Implement {@link org.apache.kafka.common.ClusterResourceListener} to receive cluster metadata once it's available. Please see the class documentation for ClusterResourceListener for more information.
- * Implement {@link org.apache.kafka.common.metrics.Monitorable} to enable the interceptor to register metrics. The following tags are automatically added to
- * all metrics registered: <code>config</code> set to <code>interceptor.classes</code>, and <code>class</code> set to the ConsumerInterceptor class name.
  */
-public interface ConsumerInterceptor<K, V> extends Configurable, AutoCloseable {
+public interface ConsumerInterceptor<K, V> extends Configurable {
 
     /**
-     * This is called just before the records are returned by
-     * {@link org.apache.kafka.clients.consumer.KafkaConsumer#poll(java.time.Duration)}
+     * This is called just before the records are returned by {@link org.apache.kafka.clients.consumer.KafkaConsumer#poll(long)}
      * <p>
      * This method is allowed to modify consumer records, in which case the new records will be
      * returned. There is no limitation on number of records that could be returned from this
@@ -67,7 +63,7 @@ public interface ConsumerInterceptor<K, V> extends Configurable, AutoCloseable {
      * @param records records to be consumed by the client or records returned by the previous interceptors in the list.
      * @return records that are either modified by the interceptor or same as records passed to this method.
      */
-    ConsumerRecords<K, V> onConsume(ConsumerRecords<K, V> records);
+    public ConsumerRecords<K, V> onConsume(ConsumerRecords<K, V> records);
 
     /**
      * This is called when offsets get committed.
@@ -76,10 +72,10 @@ public interface ConsumerInterceptor<K, V> extends Configurable, AutoCloseable {
      *
      * @param offsets A map of offsets by partition with associated metadata
      */
-    void onCommit(Map<TopicPartition, OffsetAndMetadata> offsets);
+    public void onCommit(Map<TopicPartition, OffsetAndMetadata> offsets);
 
     /**
      * This is called when interceptor is closed
      */
-    void close();
+    public void close();
 }

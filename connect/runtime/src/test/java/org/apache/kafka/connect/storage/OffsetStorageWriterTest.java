@@ -16,16 +16,18 @@
  */
 package org.apache.kafka.connect.storage;
 
+import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.util.Callback;
-
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.mockito.junit.jupiter.MockitoSettings;
-import org.mockito.quality.Strictness;
+import org.easymock.Capture;
+import org.easymock.EasyMock;
+import org.easymock.IAnswer;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.powermock.api.easymock.PowerMock;
+import org.powermock.api.easymock.annotation.Mock;
+import org.powermock.modules.junit4.PowerMockRunner;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -37,46 +39,38 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.Callable;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
-import static org.mockito.Mockito.when;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
-@ExtendWith(MockitoExtension.class)
-@MockitoSettings(strictness = Strictness.STRICT_STUBS)
+@RunWith(PowerMockRunner.class)
 public class OffsetStorageWriterTest {
     private static final String NAMESPACE = "namespace";
     // Connect format - any types should be accepted here
-    private static final Map<String, Object> OFFSET_KEY = Collections.singletonMap("key", "key");
-    private static final Map<String, Object> OFFSET_VALUE = Collections.singletonMap("key", 12);
+    private static final Map<String, String> OFFSET_KEY = Collections.singletonMap("key", "key");
+    private static final Map<String, Integer> OFFSET_VALUE = Collections.singletonMap("key", 12);
 
     // Serialized
     private static final byte[] OFFSET_KEY_SERIALIZED = "key-serialized".getBytes();
     private static final byte[] OFFSET_VALUE_SERIALIZED = "value-serialized".getBytes();
 
-    private static final Exception EXCEPTION = new RuntimeException("error");
-
-    private final OffsetBackingStore store = mock(OffsetBackingStore.class);
-    private final Converter keyConverter = mock(Converter.class);
-    private final Converter valueConverter = mock(Converter.class);
+    @Mock private OffsetBackingStore store;
+    @Mock private Converter keyConverter;
+    @Mock private Converter valueConverter;
     private OffsetStorageWriter writer;
+
+    private static Exception exception = new RuntimeException("error");
 
     private ExecutorService service;
 
-    @BeforeEach
+    @Before
     public void setup() {
         writer = new OffsetStorageWriter(store, NAMESPACE, keyConverter, valueConverter);
         service = Executors.newFixedThreadPool(1);
     }
 
-    @AfterEach
+    @After
     public void teardown() {
         service.shutdownNow();
     }
@@ -84,28 +78,34 @@ public class OffsetStorageWriterTest {
     @Test
     public void testWriteFlush() throws Exception {
         @SuppressWarnings("unchecked")
-        Callback<Void> callback = mock(Callback.class);
-        expectStore(OFFSET_KEY, OFFSET_KEY_SERIALIZED, OFFSET_VALUE, OFFSET_VALUE_SERIALIZED, false, null);
+        Callback<Void> callback = PowerMock.createMock(Callback.class);
+        expectStore(OFFSET_KEY, OFFSET_KEY_SERIALIZED, OFFSET_VALUE, OFFSET_VALUE_SERIALIZED, callback, false, null);
+
+        PowerMock.replayAll();
 
         writer.offset(OFFSET_KEY, OFFSET_VALUE);
 
-        assertTrue(writer.beginFlush(1000L, TimeUnit.MILLISECONDS));
+        assertTrue(writer.beginFlush());
         writer.doFlush(callback).get(1000, TimeUnit.MILLISECONDS);
-        verify(callback).onCompletion(isNull(), isNull());
+
+        PowerMock.verifyAll();
     }
 
     // It should be possible to set offset values to null
     @Test
     public void testWriteNullValueFlush() throws Exception {
         @SuppressWarnings("unchecked")
-        Callback<Void> callback = mock(Callback.class);
-        expectStore(OFFSET_KEY, OFFSET_KEY_SERIALIZED, null, null, false, null);
+        Callback<Void> callback = PowerMock.createMock(Callback.class);
+        expectStore(OFFSET_KEY, OFFSET_KEY_SERIALIZED, null, null, callback, false, null);
+
+        PowerMock.replayAll();
 
         writer.offset(OFFSET_KEY, null);
 
-        assertTrue(writer.beginFlush(1000L, TimeUnit.MILLISECONDS));
+        assertTrue(writer.beginFlush());
         writer.doFlush(callback).get(1000, TimeUnit.MILLISECONDS);
-        verify(callback).onCompletion(isNull(), isNull());
+
+        PowerMock.verifyAll();
     }
 
     // It should be possible to use null keys. These aren't actually stored as null since the key is wrapped to include
@@ -113,24 +113,30 @@ public class OffsetStorageWriterTest {
     @Test
     public void testWriteNullKeyFlush() throws Exception {
         @SuppressWarnings("unchecked")
-        Callback<Void> callback = mock(Callback.class);
-        expectStore(null, null, OFFSET_VALUE, OFFSET_VALUE_SERIALIZED, false, null);
+        Callback<Void> callback = PowerMock.createMock(Callback.class);
+        expectStore(null, null, OFFSET_VALUE, OFFSET_VALUE_SERIALIZED, callback, false, null);
+
+        PowerMock.replayAll();
 
         writer.offset(null, OFFSET_VALUE);
 
-        assertTrue(writer.beginFlush(1000L, TimeUnit.MILLISECONDS));
+        assertTrue(writer.beginFlush());
         writer.doFlush(callback).get(1000, TimeUnit.MILLISECONDS);
-        verify(callback).onCompletion(isNull(), isNull());
+
+        PowerMock.verifyAll();
     }
 
     @Test
-    public void testNoOffsetsToFlush() throws InterruptedException, TimeoutException {
-        assertFalse(writer.beginFlush(1000L, TimeUnit.MILLISECONDS));
-        assertFalse(writer.beginFlush(1000L, TimeUnit.MILLISECONDS));
-
+    public void testNoOffsetsToFlush() {
         // If no offsets are flushed, we should finish immediately and not have made any calls to the
         // underlying storage layer
-        verifyNoInteractions(store);
+
+        PowerMock.replayAll();
+
+        // Should not return a future
+        assertFalse(writer.beginFlush());
+
+        PowerMock.verifyAll();
     }
 
     @Test
@@ -139,64 +145,74 @@ public class OffsetStorageWriterTest {
         // such that a subsequent flush will write them.
 
         @SuppressWarnings("unchecked")
-        final Callback<Void> callback = mock(Callback.class);
+        final Callback<Void> callback = PowerMock.createMock(Callback.class);
         // First time the write fails
-        expectStore(OFFSET_KEY, OFFSET_KEY_SERIALIZED, OFFSET_VALUE, OFFSET_VALUE_SERIALIZED, true, null);
-        writer.offset(OFFSET_KEY, OFFSET_VALUE);
-        assertTrue(writer.beginFlush(1000L, TimeUnit.MILLISECONDS));
-        writer.doFlush(callback).get(1000, TimeUnit.MILLISECONDS);
-        verify(callback).onCompletion(eq(EXCEPTION), isNull());
-
+        expectStore(OFFSET_KEY, OFFSET_KEY_SERIALIZED, OFFSET_VALUE, OFFSET_VALUE_SERIALIZED, callback, true, null);
         // Second time it succeeds
-        expectStore(OFFSET_KEY, OFFSET_KEY_SERIALIZED, OFFSET_VALUE, OFFSET_VALUE_SERIALIZED, false, null);
-        assertTrue(writer.beginFlush(1000L, TimeUnit.MILLISECONDS));
-        writer.doFlush(callback).get(1000, TimeUnit.MILLISECONDS);
-        verify(callback).onCompletion(isNull(), isNull());
-
+        expectStore(OFFSET_KEY, OFFSET_KEY_SERIALIZED, OFFSET_VALUE, OFFSET_VALUE_SERIALIZED, callback, false, null);
         // Third time it has no data to flush so we won't get past beginFlush()
-        assertFalse(writer.beginFlush(1000L, TimeUnit.MILLISECONDS));
+
+        PowerMock.replayAll();
+
+        writer.offset(OFFSET_KEY, OFFSET_VALUE);
+        assertTrue(writer.beginFlush());
+        writer.doFlush(callback).get(1000, TimeUnit.MILLISECONDS);
+        assertTrue(writer.beginFlush());
+        writer.doFlush(callback).get(1000, TimeUnit.MILLISECONDS);
+        assertFalse(writer.beginFlush());
+
+        PowerMock.verifyAll();
     }
 
-    @Test
-    public void testAlreadyFlushing() throws InterruptedException, TimeoutException {
+    @Test(expected = ConnectException.class)
+    public void testAlreadyFlushing() throws Exception {
         @SuppressWarnings("unchecked")
-        final Callback<Void> callback = mock(Callback.class);
+        final Callback<Void> callback = PowerMock.createMock(Callback.class);
         // Trigger the send, but don't invoke the callback so we'll still be mid-flush
         CountDownLatch allowStoreCompleteCountdown = new CountDownLatch(1);
-        expectStore(OFFSET_KEY, OFFSET_KEY_SERIALIZED, OFFSET_VALUE, OFFSET_VALUE_SERIALIZED, false, allowStoreCompleteCountdown);
+        expectStore(OFFSET_KEY, OFFSET_KEY_SERIALIZED, OFFSET_VALUE, OFFSET_VALUE_SERIALIZED, null, false, allowStoreCompleteCountdown);
+
+        PowerMock.replayAll();
 
         writer.offset(OFFSET_KEY, OFFSET_VALUE);
-        assertTrue(writer.beginFlush(1000L, TimeUnit.MILLISECONDS));
-        assertThrows(TimeoutException.class, () -> writer.beginFlush(1000L, TimeUnit.MILLISECONDS));
+        assertTrue(writer.beginFlush());
         writer.doFlush(callback);
-        assertThrows(TimeoutException.class, () -> writer.beginFlush(1000L, TimeUnit.MILLISECONDS));
-        allowStoreCompleteCountdown.countDown();
-        assertFalse(writer.beginFlush(1000L, TimeUnit.MILLISECONDS));
+        assertTrue(writer.beginFlush()); // should throw
+
+        PowerMock.verifyAll();
     }
 
     @Test
-    public void testCancelBeforeAwaitFlush() throws InterruptedException, TimeoutException {
+    public void testCancelBeforeAwaitFlush() {
+        PowerMock.replayAll();
+
         writer.offset(OFFSET_KEY, OFFSET_VALUE);
-        assertTrue(writer.beginFlush(1000L, TimeUnit.MILLISECONDS));
+        assertTrue(writer.beginFlush());
         writer.cancelFlush();
+
+        PowerMock.verifyAll();
     }
 
     @Test
     public void testCancelAfterAwaitFlush() throws Exception {
         @SuppressWarnings("unchecked")
-        Callback<Void> callback = mock(Callback.class);
+        Callback<Void> callback = PowerMock.createMock(Callback.class);
         CountDownLatch allowStoreCompleteCountdown = new CountDownLatch(1);
         // In this test, the write should be cancelled so the callback will not be invoked and is not
         // passed to the expectStore call
-        expectStore(OFFSET_KEY, OFFSET_KEY_SERIALIZED, OFFSET_VALUE, OFFSET_VALUE_SERIALIZED, false, allowStoreCompleteCountdown);
+        expectStore(OFFSET_KEY, OFFSET_KEY_SERIALIZED, OFFSET_VALUE, OFFSET_VALUE_SERIALIZED, null, false, allowStoreCompleteCountdown);
+
+        PowerMock.replayAll();
 
         writer.offset(OFFSET_KEY, OFFSET_VALUE);
-        assertTrue(writer.beginFlush(1000L, TimeUnit.MILLISECONDS));
+        assertTrue(writer.beginFlush());
         // Start the flush, then immediately cancel before allowing the mocked store request to finish
         Future<Void> flushFuture = writer.doFlush(callback);
         writer.cancelFlush();
         allowStoreCompleteCountdown.countDown();
         flushFuture.get(1000, TimeUnit.MILLISECONDS);
+
+        PowerMock.verifyAll();
     }
 
     /**
@@ -206,38 +222,55 @@ public class OffsetStorageWriterTest {
      * @param keySerialized serialized version of the key
      * @param value the value for the offset
      * @param valueSerialized serialized version of the value
+     * @param callback the callback to invoke when completed, or null if the callback isn't
+     *                 expected to be invoked
      * @param fail if true, treat
      * @param waitForCompletion if non-null, a CountDownLatch that should be awaited on before
      *                          invoking the callback. A (generous) timeout is still imposed to
      *                          ensure tests complete.
+     * @return the captured set of ByteBuffer key-value pairs passed to the storage layer
      */
-    @SuppressWarnings("unchecked")
-    private void expectStore(Map<String, Object> key, byte[] keySerialized,
-                             Map<String, Object> value, byte[] valueSerialized,
+    private void expectStore(Map<String, String> key, byte[] keySerialized,
+                             Map<String, Integer> value, byte[] valueSerialized,
+                             final Callback<Void> callback,
                              final boolean fail,
                              final CountDownLatch waitForCompletion) {
         List<Object> keyWrapped = Arrays.asList(NAMESPACE, key);
-        when(keyConverter.fromConnectData(NAMESPACE, null, keyWrapped)).thenReturn(keySerialized);
-        when(valueConverter.fromConnectData(NAMESPACE, null, value)).thenReturn(valueSerialized);
+        EasyMock.expect(keyConverter.fromConnectData(NAMESPACE, null, keyWrapped)).andReturn(keySerialized);
+        EasyMock.expect(valueConverter.fromConnectData(NAMESPACE, null, value)).andReturn(valueSerialized);
 
-        final ArgumentCaptor<Callback<Void>> storeCallback = ArgumentCaptor.forClass(Callback.class);
+        final Capture<Callback<Void>> storeCallback = Capture.newInstance();
         final Map<ByteBuffer, ByteBuffer> offsetsSerialized = Collections.singletonMap(
                 keySerialized == null ? null : ByteBuffer.wrap(keySerialized),
                 valueSerialized == null ? null : ByteBuffer.wrap(valueSerialized));
-        when(store.set(eq(offsetsSerialized), storeCallback.capture())).thenAnswer(invocation -> {
-            final Callback<Void> cb = invocation.getArgument(1);
-            return service.submit(() -> {
-                if (waitForCompletion != null)
-                    assertTrue(waitForCompletion.await(10000, TimeUnit.MILLISECONDS));
+        EasyMock.expect(store.set(EasyMock.eq(offsetsSerialized), EasyMock.capture(storeCallback)))
+                .andAnswer(new IAnswer<Future<Void>>() {
+                    @Override
+                    public Future<Void> answer() throws Throwable {
+                        return service.submit(new Callable<Void>() {
+                            @Override
+                            public Void call() throws Exception {
+                                if (waitForCompletion != null)
+                                    assertTrue(waitForCompletion.await(10000, TimeUnit.MILLISECONDS));
 
-                if (fail) {
-                    cb.onCompletion(EXCEPTION, null);
-                } else {
-                    cb.onCompletion(null, null);
-                }
-                return null;
-            });
-        });
+                                if (fail) {
+                                    storeCallback.getValue().onCompletion(exception, null);
+                                } else {
+                                    storeCallback.getValue().onCompletion(null, null);
+                                }
+                                return null;
+                            }
+                        });
+                    }
+                });
+        if (callback != null) {
+            if (fail) {
+                callback.onCompletion(EasyMock.eq(exception), EasyMock.eq((Void) null));
+            } else {
+                callback.onCompletion(null, null);
+            }
+        }
+        PowerMock.expectLastCall();
     }
 
 }

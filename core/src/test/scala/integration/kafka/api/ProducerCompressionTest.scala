@@ -17,44 +17,41 @@
 
 package kafka.api.test
 
-import kafka.server.{KafkaBroker, KafkaConfig, QuorumTestHarness}
+import java.util.{Collection, Collections, Properties}
+
+import scala.collection.JavaConverters._
+import org.junit.runners.Parameterized
+import org.junit.runner.RunWith
+import org.junit.runners.Parameterized.Parameters
+import org.junit.{After, Before, Test}
+import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, ProducerRecord}
+import org.junit.Assert._
+import kafka.server.{KafkaConfig, KafkaServer}
+import kafka.zk.ZooKeeperTestHarness
 import kafka.utils.TestUtils
-import org.apache.kafka.clients.consumer.GroupProtocol
-import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, ProducerRecord, RecordMetadata}
 import org.apache.kafka.common.TopicPartition
-import org.apache.kafka.common.header.Header
-import org.apache.kafka.common.header.internals.{RecordHeader, RecordHeaders}
-import org.apache.kafka.common.network.ListenerName
 import org.apache.kafka.common.security.auth.SecurityProtocol
 import org.apache.kafka.common.serialization.ByteArraySerializer
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.{AfterEach, BeforeEach, TestInfo}
-import org.junit.jupiter.params.ParameterizedTest
-import org.junit.jupiter.params.provider.CsvSource
 
-import java.util.concurrent.Future
-import java.util.{Collections, Properties}
-import scala.collection.mutable.ListBuffer
-import scala.util.Random
-
-class ProducerCompressionTest extends QuorumTestHarness {
+@RunWith(value = classOf[Parameterized])
+class ProducerCompressionTest(compression: String) extends ZooKeeperTestHarness {
 
   private val brokerId = 0
   private val topic = "topic"
   private val numRecords = 2000
 
-  private var broker: KafkaBroker = _
+  private var server: KafkaServer = null
 
-  @BeforeEach
-  override def setUp(testInfo: TestInfo): Unit = {
-    super.setUp(testInfo)
-    val props = TestUtils.createBrokerConfig(brokerId)
-    broker = createBroker(new KafkaConfig(props))
+  @Before
+  override def setUp() {
+    super.setUp()
+    val props = TestUtils.createBrokerConfig(brokerId, zkConnect)
+    server = TestUtils.createServer(KafkaConfig.fromProps(props))
   }
 
-  @AfterEach
-  override def tearDown(): Unit = {
-    TestUtils.shutdownServers(Seq(broker))
+  @After
+  override def tearDown() {
+    TestUtils.shutdownServers(Seq(server))
     super.tearDown()
   }
 
@@ -63,62 +60,30 @@ class ProducerCompressionTest extends QuorumTestHarness {
    *
    * Compressed messages should be able to sent and consumed correctly
    */
-  @ParameterizedTest(name = "{displayName}.quorum={0}.groupProtocol={1}.compression={2}")
-  @CsvSource(value = Array(
-    "kraft,classic,none",
-    "kraft,consumer,none",
-    "kraft,classic,gzip",
-    "kraft,consumer,gzip",
-    "kraft,classic,snappy",
-    "kraft,consumer,snappy",
-    "kraft,classic,lz4",
-    "kraft,consumer,lz4",
-    "kraft,classic,zstd",
-    "kraft,consumer,zstd"
-  ))
-  def testCompression(quorum: String, groupProtocol: String, compression: String): Unit = {
+  @Test
+  def testCompression() {
+
     val producerProps = new Properties()
-    val bootstrapServers = TestUtils.plaintextBootstrapServers(Seq(broker))
+    val bootstrapServers = TestUtils.getBrokerListStrFromServers(Seq(server))
     producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers)
     producerProps.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, compression)
     producerProps.put(ProducerConfig.BATCH_SIZE_CONFIG, "66000")
     producerProps.put(ProducerConfig.LINGER_MS_CONFIG, "200")
     val producer = new KafkaProducer(producerProps, new ByteArraySerializer, new ByteArraySerializer)
-    val consumer = TestUtils.createConsumer(bootstrapServers, GroupProtocol.of(groupProtocol))
+    val consumer = TestUtils.createNewConsumer(bootstrapServers, securityProtocol = SecurityProtocol.PLAINTEXT)
 
     try {
       // create topic
-      val admin = TestUtils.createAdminClient(Seq(broker),
-        ListenerName.forSecurityProtocol(SecurityProtocol.PLAINTEXT))
-      try {
-        TestUtils.createTopicWithAdmin(admin, topic, Seq(broker), controllerServers)
-      } finally {
-        admin.close()
-      }
+      TestUtils.createTopic(zkUtils, topic, 1, 1, List(server))
       val partition = 0
 
-      def messageValue(length: Int): String = {
-        val random = new Random(0)
-        new String(random.alphanumeric.take(length).toArray)
-      }
-
       // prepare the messages
-      val messageValues = (0 until numRecords).map(i => messageValue(i))
-      val headerArr = Array[Header](new RecordHeader("key", "value".getBytes))
-      val headers = new RecordHeaders(headerArr)
+      val messageValues = (0 until numRecords).map(i => "value" + i)
 
       // make sure the returned messages are correct
       val now = System.currentTimeMillis()
-      val responses: ListBuffer[Future[RecordMetadata]] = new ListBuffer[Future[RecordMetadata]]()
-
-      for (message <- messageValues) {
-        // 1. send message without key and header
-        responses += producer.send(new ProducerRecord(topic, null, now, null, message.getBytes))
-        // 2. send message with key, without header
-        responses += producer.send(new ProducerRecord(topic, null, now, message.length.toString.getBytes, message.getBytes))
-        // 3. send message with key and header
-        responses += producer.send(new ProducerRecord(topic, null, now, message.length.toString.getBytes, message.getBytes, headers))
-      }
+      val responses = for (message <- messageValues)
+        yield producer.send(new ProducerRecord(topic, null, now, null, message.getBytes))
       for ((future, offset) <- responses.zipWithIndex) {
         assertEquals(offset.toLong, future.get.offset)
       }
@@ -127,41 +92,29 @@ class ProducerCompressionTest extends QuorumTestHarness {
       // make sure the fetched message count match
       consumer.assign(Collections.singleton(tp))
       consumer.seek(tp, 0)
-      val records = TestUtils.consumeRecords(consumer, numRecords*3)
+      val records = TestUtils.consumeRecords(consumer, numRecords)
 
-      for (i <- 0 until numRecords) {
-        val messageValue = messageValues(i)
-        // 1. verify message without key and header
-        var offset = i * 3
-        var record = records(offset)
-        assertNull(record.key())
+      for (((messageValue, record), index) <- messageValues.zip(records).zipWithIndex) {
         assertEquals(messageValue, new String(record.value))
-        assertEquals(0, record.headers().toArray.length)
         assertEquals(now, record.timestamp)
-        assertEquals(offset.toLong, record.offset)
-
-        // 2. verify message with key, without header
-        offset = i * 3 + 1
-        record = records(offset)
-        assertEquals(messageValue.length.toString, new String(record.key()))
-        assertEquals(messageValue, new String(record.value))
-        assertEquals(0, record.headers().toArray.length)
-        assertEquals(now, record.timestamp)
-        assertEquals(offset.toLong, record.offset)
-
-        // 3. verify message with key and header
-        offset = i * 3 + 2
-        record = records(offset)
-        assertEquals(messageValue.length.toString, new String(record.key()))
-        assertEquals(messageValue, new String(record.value))
-        assertEquals(1, record.headers().toArray.length)
-        assertEquals(headerArr.apply(0), record.headers().toArray.apply(0))
-        assertEquals(now, record.timestamp)
-        assertEquals(offset.toLong, record.offset)
+        assertEquals(index.toLong, record.offset)
       }
     } finally {
       producer.close()
       consumer.close()
     }
+  }
+}
+
+object ProducerCompressionTest {
+
+  @Parameters(name = "{index} compressionType = {0}")
+  def parameters: Collection[Array[String]] = {
+    Seq(
+      Array("none"),
+      Array("gzip"),
+      Array("snappy"),
+      Array("lz4")
+    ).asJava
   }
 }

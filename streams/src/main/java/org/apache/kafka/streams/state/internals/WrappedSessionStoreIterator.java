@@ -19,23 +19,43 @@ package org.apache.kafka.streams.state.internals;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.streams.KeyValue;
 import org.apache.kafka.streams.kstream.Windowed;
+import org.apache.kafka.streams.kstream.internals.SessionKeySerde;
 import org.apache.kafka.streams.state.KeyValueIterator;
+import org.apache.kafka.streams.state.StateSerdes;
 
-import java.util.function.Function;
+class WrappedSessionStoreIterator<K, V> implements KeyValueIterator<Windowed<K>, V> {
+    final KeyValueIterator<Bytes, byte[]> bytesIterator;
+    private final StateSerdes<K, V> serdes;
 
-class WrappedSessionStoreIterator implements KeyValueIterator<Windowed<Bytes>, byte[]> {
+    // this is optimizing the case when underlying is already a bytes store iterator, in which we can avoid Bytes.wrap() costs
+    private static class WrappedSessionStoreBytesIterator extends WrappedSessionStoreIterator<Bytes, byte[]> {
+        WrappedSessionStoreBytesIterator(final KeyValueIterator<Bytes, byte[]> underlying,
+                                         final StateSerdes<Bytes, byte[]> serdes) {
+            super(underlying, serdes);
+        }
 
-    private final KeyValueIterator<Bytes, byte[]> bytesIterator;
-    private final Function<Bytes, Windowed<Bytes>> windowConstructor;
+        @Override
+        public Windowed<Bytes> peekNextKey() {
+            final Bytes key = bytesIterator.peekNextKey();
 
-    WrappedSessionStoreIterator(final KeyValueIterator<Bytes, byte[]> bytesIterator) {
-        this(bytesIterator, SessionKeySchema::from);
+            return SessionKeySerde.fromBytes(key);
+        }
+
+        @Override
+        public KeyValue<Windowed<Bytes>, byte[]> next() {
+            final KeyValue<Bytes, byte[]> next = bytesIterator.next();
+            return KeyValue.pair(SessionKeySerde.fromBytes(next.key), next.value);
+        }
     }
 
-    WrappedSessionStoreIterator(final KeyValueIterator<Bytes, byte[]> bytesIterator,
-                                final Function<Bytes, Windowed<Bytes>> windowConstructor) {
+    static WrappedSessionStoreIterator<Bytes, byte[]> bytesIterator(final KeyValueIterator<Bytes, byte[]> underlying,
+                                                                    final StateSerdes<Bytes, byte[]> serdes) {
+        return new WrappedSessionStoreBytesIterator(underlying, serdes);
+    }
+
+    WrappedSessionStoreIterator(final KeyValueIterator<Bytes, byte[]> bytesIterator, final StateSerdes<K, V> serdes) {
         this.bytesIterator = bytesIterator;
-        this.windowConstructor = windowConstructor;
+        this.serdes = serdes;
     }
 
     @Override
@@ -44,8 +64,9 @@ class WrappedSessionStoreIterator implements KeyValueIterator<Windowed<Bytes>, b
     }
 
     @Override
-    public Windowed<Bytes> peekNextKey() {
-        return windowConstructor.apply(bytesIterator.peekNextKey());
+    public Windowed<K> peekNextKey() {
+        final Bytes bytes = bytesIterator.peekNextKey();
+        return SessionKeySerde.from(bytes.get(), serdes.keyDeserializer(), serdes.topic());
     }
 
     @Override
@@ -54,8 +75,13 @@ class WrappedSessionStoreIterator implements KeyValueIterator<Windowed<Bytes>, b
     }
 
     @Override
-    public KeyValue<Windowed<Bytes>, byte[]> next() {
+    public KeyValue<Windowed<K>, V> next() {
         final KeyValue<Bytes, byte[]> next = bytesIterator.next();
-        return KeyValue.pair(windowConstructor.apply(next.key), next.value);
+        return KeyValue.pair(SessionKeySerde.from(next.key.get(), serdes.keyDeserializer(), serdes.topic()), serdes.valueFrom(next.value));
+    }
+
+    @Override
+    public void remove() {
+        throw new UnsupportedOperationException("remove() is not supported in " + getClass().getName());
     }
 }

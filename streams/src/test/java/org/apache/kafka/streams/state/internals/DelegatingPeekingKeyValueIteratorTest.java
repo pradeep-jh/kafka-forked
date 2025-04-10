@@ -16,28 +16,24 @@
  */
 package org.apache.kafka.streams.state.internals;
 
+import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.streams.KeyValue;
-import org.apache.kafka.streams.state.KeyValueStore;
-import org.apache.kafka.test.GenericInMemoryKeyValueStore;
-
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.util.NoSuchElementException;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 public class DelegatingPeekingKeyValueIteratorTest {
 
     private final String name = "name";
-    private KeyValueStore<String, String> store;
+    private InMemoryKeyValueStore<String, String> store;
 
-    @BeforeEach
+    @Before
     public void setUp() {
-        store = new GenericInMemoryKeyValueStore<>(name);
+        store = new InMemoryKeyValueStore<>(name, Serdes.String(), Serdes.String());
     }
 
     @Test
@@ -63,7 +59,7 @@ public class DelegatingPeekingKeyValueIteratorTest {
     @Test
     public void shouldPeekAndIterate() {
         final String[] kvs = {"a", "b", "c", "d", "e", "f"};
-        for (final String kv : kvs) {
+        for (String kv : kvs) {
             store.put(kv, kv);
         }
 
@@ -80,20 +76,18 @@ public class DelegatingPeekingKeyValueIteratorTest {
         peekingIterator.close();
     }
 
-    @Test
+    @Test(expected = NoSuchElementException.class)
     public void shouldThrowNoSuchElementWhenNoMoreItemsLeftAndNextCalled() {
-        try (final DelegatingPeekingKeyValueIterator<String, String> peekingIterator =
-            new DelegatingPeekingKeyValueIterator<>(name, store.all())) {
-            assertThrows(NoSuchElementException.class, peekingIterator::next);
-        }
+        final DelegatingPeekingKeyValueIterator<String, String> peekingIterator = new DelegatingPeekingKeyValueIterator<>(name, store.all());
+        peekingIterator.next();
+        peekingIterator.close();
     }
 
-    @Test
+    @Test(expected = NoSuchElementException.class)
     public void shouldThrowNoSuchElementWhenNoMoreItemsLeftAndPeekNextCalled() {
-        try (final DelegatingPeekingKeyValueIterator<String, String> peekingIterator =
-            new DelegatingPeekingKeyValueIterator<>(name, store.all())) {
-            assertThrows(NoSuchElementException.class, peekingIterator::peekNextKey);
-        }
+        final DelegatingPeekingKeyValueIterator<String, String> peekingIterator = new DelegatingPeekingKeyValueIterator<>(name, store.all());
+        peekingIterator.peekNextKey();
+        peekingIterator.close();
     }
 
 

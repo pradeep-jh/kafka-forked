@@ -22,16 +22,10 @@ public class Change<T> {
 
     public final T newValue;
     public final T oldValue;
-    public final boolean isLatest;
 
-    public Change(final T newValue, final T oldValue) {
-        this(newValue, oldValue, true);
-    }
-
-    public Change(final T newValue, final T oldValue, final boolean isLatest) {
+    public Change(T newValue, T oldValue) {
         this.newValue = newValue;
         this.oldValue = oldValue;
-        this.isLatest = isLatest;
     }
 
     @Override
@@ -41,20 +35,15 @@ public class Change<T> {
 
     @Override
     public boolean equals(final Object o) {
-        if (this == o) {
-            return true;
-        }
-        if (o == null || getClass() != o.getClass()) {
-            return false;
-        }
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
         final Change<?> change = (Change<?>) o;
-        return Objects.equals(newValue, change.newValue)
-            && Objects.equals(oldValue, change.oldValue)
-            && isLatest == change.isLatest;
+        return Objects.equals(newValue, change.newValue) &&
+                Objects.equals(oldValue, change.oldValue);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(newValue, oldValue, isLatest);
+        return Objects.hash(newValue, oldValue);
     }
 }

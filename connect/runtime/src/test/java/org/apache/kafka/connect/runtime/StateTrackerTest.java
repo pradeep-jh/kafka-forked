@@ -16,14 +16,13 @@
  */
 package org.apache.kafka.connect.runtime;
 
-import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.connect.runtime.AbstractStatus.State;
+import org.apache.kafka.connect.util.MockTime;
+import org.junit.Before;
+import org.junit.Test;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 
 public class StateTrackerTest {
 
@@ -31,12 +30,14 @@ public class StateTrackerTest {
 
     private StateTracker tracker;
     private MockTime time;
+    private State state;
 
-    @BeforeEach
+    @Before
     public void setUp() {
         time = new MockTime();
         time.sleep(1000L);
         tracker = new StateTracker();
+        state = State.UNASSIGNED;
     }
 
     @Test
@@ -61,7 +62,6 @@ public class StateTrackerTest {
         assertEquals(0.0d, tracker.durationRatio(State.PAUSED, time.milliseconds()), DELTA);
         assertEquals(0.0d, tracker.durationRatio(State.FAILED, time.milliseconds()), DELTA);
         assertEquals(0.0d, tracker.durationRatio(State.DESTROYED, time.milliseconds()), DELTA);
-        assertEquals(0.0d, tracker.durationRatio(State.RESTARTING, time.milliseconds()), DELTA);
 
         tracker.changeState(State.RUNNING, time.milliseconds());
         time.sleep(3000L);
@@ -70,7 +70,6 @@ public class StateTrackerTest {
         assertEquals(0.0d, tracker.durationRatio(State.PAUSED, time.milliseconds()), DELTA);
         assertEquals(0.0d, tracker.durationRatio(State.FAILED, time.milliseconds()), DELTA);
         assertEquals(0.0d, tracker.durationRatio(State.DESTROYED, time.milliseconds()), DELTA);
-        assertEquals(0.0d, tracker.durationRatio(State.RESTARTING, time.milliseconds()), DELTA);
 
         tracker.changeState(State.PAUSED, time.milliseconds());
         time.sleep(4000L);
@@ -79,7 +78,6 @@ public class StateTrackerTest {
         assertEquals(0.500d, tracker.durationRatio(State.PAUSED, time.milliseconds()), DELTA);
         assertEquals(0.0d, tracker.durationRatio(State.FAILED, time.milliseconds()), DELTA);
         assertEquals(0.0d, tracker.durationRatio(State.DESTROYED, time.milliseconds()), DELTA);
-        assertEquals(0.0d, tracker.durationRatio(State.RESTARTING, time.milliseconds()), DELTA);
 
         tracker.changeState(State.RUNNING, time.milliseconds());
         time.sleep(8000L);
@@ -88,7 +86,6 @@ public class StateTrackerTest {
         assertEquals(0.2500d, tracker.durationRatio(State.PAUSED, time.milliseconds()), DELTA);
         assertEquals(0.0d, tracker.durationRatio(State.FAILED, time.milliseconds()), DELTA);
         assertEquals(0.0d, tracker.durationRatio(State.DESTROYED, time.milliseconds()), DELTA);
-        assertEquals(0.0d, tracker.durationRatio(State.RESTARTING, time.milliseconds()), DELTA);
 
         tracker.changeState(State.FAILED, time.milliseconds());
         time.sleep(16000L);
@@ -97,7 +94,6 @@ public class StateTrackerTest {
         assertEquals(0.12500d, tracker.durationRatio(State.PAUSED, time.milliseconds()), DELTA);
         assertEquals(0.50000d, tracker.durationRatio(State.FAILED, time.milliseconds()), DELTA);
         assertEquals(0.0d, tracker.durationRatio(State.DESTROYED, time.milliseconds()), DELTA);
-        assertEquals(0.0d, tracker.durationRatio(State.RESTARTING, time.milliseconds()), DELTA);
 
     }
 

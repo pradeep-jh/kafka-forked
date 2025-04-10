@@ -23,11 +23,11 @@ import java.util.List;
 import java.util.Objects;
 
 public class ConfigValueInfo {
-    private final String name;
-    private final String value;
-    private final List<String> recommendedValues;
-    private final List<String> errors;
-    private final boolean visible;
+    private String name;
+    private String value;
+    private List<String> recommendedValues;
+    private List<String> errors;
+    private boolean visible;
 
     @JsonCreator
     public ConfigValueInfo(
@@ -87,17 +87,19 @@ public class ConfigValueInfo {
 
     @Override
     public String toString() {
-        return "[" +
-                name +
-                "," +
-                value +
-                "," +
-                recommendedValues +
-                "," +
-                errors +
-                "," +
-                visible +
-                "]";
+        StringBuffer sb = new StringBuffer();
+        sb.append("[")
+            .append(name)
+            .append(",")
+            .append(value)
+            .append(",")
+            .append(recommendedValues)
+            .append(",")
+            .append(errors)
+            .append(",")
+            .append(visible)
+            .append("]");
+        return sb.toString();
     }
 
 }

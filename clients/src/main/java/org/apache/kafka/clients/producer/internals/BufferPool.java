@@ -16,20 +16,19 @@
  */
 package org.apache.kafka.clients.producer.internals;
 
-import org.apache.kafka.clients.producer.BufferExhaustedException;
-import org.apache.kafka.common.KafkaException;
-import org.apache.kafka.common.MetricName;
-import org.apache.kafka.common.metrics.Metrics;
-import org.apache.kafka.common.metrics.Sensor;
-import org.apache.kafka.common.metrics.stats.Meter;
-import org.apache.kafka.common.utils.Time;
-
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
+
+import org.apache.kafka.common.MetricName;
+import org.apache.kafka.common.errors.TimeoutException;
+import org.apache.kafka.common.metrics.Metrics;
+import org.apache.kafka.common.metrics.Sensor;
+import org.apache.kafka.common.metrics.stats.Meter;
+import org.apache.kafka.common.utils.Time;
 
 
 /**
@@ -56,7 +55,6 @@ public class BufferPool {
     private final Metrics metrics;
     private final Time time;
     private final Sensor waitTime;
-    private boolean closed;
 
     /**
      * Create a new buffer pool
@@ -80,17 +78,10 @@ public class BufferPool {
         MetricName rateMetricName = metrics.metricName("bufferpool-wait-ratio",
                                                    metricGrpName,
                                                    "The fraction of time an appender waits for space allocation.");
-        MetricName totalNsMetricName = metrics.metricName("bufferpool-wait-time-ns-total",
-                                                    metricGrpName,
-                                                    "The total time in nanoseconds an appender waits for space allocation.");
-
-        Sensor bufferExhaustedRecordSensor = metrics.sensor("buffer-exhausted-records");
-        MetricName bufferExhaustedRateMetricName = metrics.metricName("buffer-exhausted-rate", metricGrpName, "The average per-second number of record sends that are dropped due to buffer exhaustion");
-        MetricName bufferExhaustedTotalMetricName = metrics.metricName("buffer-exhausted-total", metricGrpName, "The total number of record sends that are dropped due to buffer exhaustion");
-        bufferExhaustedRecordSensor.add(new Meter(bufferExhaustedRateMetricName, bufferExhaustedTotalMetricName));
-
-        this.waitTime.add(new Meter(TimeUnit.NANOSECONDS, rateMetricName, totalNsMetricName));
-        this.closed = false;
+        MetricName totalMetricName = metrics.metricName("bufferpool-wait-time-total",
+                                                   metricGrpName,
+                                                   "The total time an appender waits for space allocation.");
+        this.waitTime.add(new Meter(TimeUnit.NANOSECONDS, rateMetricName, totalMetricName));
     }
 
     /**
@@ -113,12 +104,6 @@ public class BufferPool {
 
         ByteBuffer buffer = null;
         this.lock.lock();
-
-        if (this.closed) {
-            this.lock.unlock();
-            throw new KafkaException("Producer closed while allocating memory");
-        }
-
         try {
             // check if we have a free buffer of the right size pooled
             if (size == poolableSize && !this.free.isEmpty())
@@ -150,17 +135,11 @@ public class BufferPool {
                         } finally {
                             long endWaitNs = time.nanoseconds();
                             timeNs = Math.max(0L, endWaitNs - startWaitNs);
-                            recordWaitTime(timeNs);
+                            this.waitTime.record(timeNs, time.milliseconds());
                         }
 
-                        if (this.closed)
-                            throw new KafkaException("Producer closed while allocating memory");
-
                         if (waitingTimeElapsed) {
-                            this.metrics.sensor("buffer-exhausted-records").record();
-                            throw new BufferExhaustedException("Failed to allocate " + size + " bytes within the configured max blocking time "
-                                + maxTimeToBlockMs + " ms. Total memory: " + totalMemory() + " bytes. Available memory: " + availableMemory()
-                                + " bytes. Poolable size: " + poolableSize() + " bytes");
+                            throw new TimeoutException("Failed to allocate memory within the configured max blocking time " + maxTimeToBlockMs + " ms.");
                         }
 
                         remainingTimeToBlockNs -= timeNs;
@@ -204,11 +183,6 @@ public class BufferPool {
             return safeAllocateByteBuffer(size);
         else
             return buffer;
-    }
-
-    // Protected for testing
-    protected void recordWaitTime(long timeNs) {
-        this.waitTime.record(timeNs, time.milliseconds());
     }
 
     /**
@@ -275,8 +249,7 @@ public class BufferPool {
     }
 
     public void deallocate(ByteBuffer buffer) {
-        if (buffer != null)
-            deallocate(buffer, buffer.capacity());
+        deallocate(buffer, buffer.capacity());
     }
 
     /**
@@ -337,20 +310,5 @@ public class BufferPool {
     // package-private method used only for testing
     Deque<Condition> waiters() {
         return this.waiters;
-    }
-
-    /**
-     * Closes the buffer pool. Memory will be prevented from being allocated, but may be deallocated. All allocations
-     * awaiting available memory will be notified to abort.
-     */
-    public void close() {
-        this.lock.lock();
-        this.closed = true;
-        try {
-            for (Condition waiter : this.waiters)
-                waiter.signal();
-        } finally {
-            this.lock.unlock();
-        }
     }
 }

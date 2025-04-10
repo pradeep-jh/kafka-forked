@@ -16,6 +16,8 @@
 from ducktape.utils.util import wait_until
 
 from kafkatest.tests.kafka_test import KafkaTest
+from kafkatest.services.zookeeper import ZookeeperService
+from kafkatest.services.kafka import KafkaService
 from kafkatest.services.verifiable_producer import VerifiableProducer
 from kafkatest.services.verifiable_consumer import VerifiableConsumer
 from kafkatest.services.kafka import TopicPartition
@@ -24,12 +26,13 @@ class VerifiableConsumerTest(KafkaTest):
     PRODUCER_REQUEST_TIMEOUT_SEC = 30
 
     def __init__(self, test_context, num_consumers=1, num_producers=0,
-                 group_id="test_group_id", **kwargs):
+                 group_id="test_group_id", session_timeout_sec=10, **kwargs):
         super(VerifiableConsumerTest, self).__init__(test_context, **kwargs)
         self.num_consumers = num_consumers
         self.num_producers = num_producers
         self.group_id = group_id
-        self.consumption_timeout_sec = self.PRODUCER_REQUEST_TIMEOUT_SEC + 5
+        self.session_timeout_sec = session_timeout_sec
+        self.consumption_timeout_sec = max(self.PRODUCER_REQUEST_TIMEOUT_SEC + 5, 2 * session_timeout_sec)
 
     def _all_partitions(self, topic, num_partitions):
         partitions = set()
@@ -39,7 +42,7 @@ class VerifiableConsumerTest(KafkaTest):
 
     def _partitions(self, assignment):
         partitions = []
-        for parts in assignment.values():
+        for parts in assignment.itervalues():
             partitions += parts
         return partitions
 
@@ -52,17 +55,15 @@ class VerifiableConsumerTest(KafkaTest):
         """Override this since we're adding services outside of the constructor"""
         return super(VerifiableConsumerTest, self).min_cluster_size() + self.num_consumers + self.num_producers
 
-    def setup_consumer(self, topic, static_membership=False, enable_autocommit=False,
-                       assignment_strategy="org.apache.kafka.clients.consumer.RangeAssignor", group_remote_assignor="range", **kwargs):
+    def setup_consumer(self, topic, enable_autocommit=False, assignment_strategy="org.apache.kafka.clients.consumer.RangeAssignor"):
         return VerifiableConsumer(self.test_context, self.num_consumers, self.kafka,
-                                  topic, self.group_id, static_membership=static_membership,
+                                  topic, self.group_id, session_timeout_sec=self.session_timeout_sec,
                                   assignment_strategy=assignment_strategy, enable_autocommit=enable_autocommit,
-                                  group_remote_assignor=group_remote_assignor,
-                                  log_level="TRACE", **kwargs)
+                                  log_level="TRACE")
 
-    def setup_producer(self, topic, max_messages=-1, throughput=500):
+    def setup_producer(self, topic, max_messages=-1):
         return VerifiableProducer(self.test_context, self.num_producers, self.kafka, topic,
-                                  max_messages=max_messages, throughput=throughput,
+                                  max_messages=max_messages, throughput=500,
                                   request_timeout_sec=self.PRODUCER_REQUEST_TIMEOUT_SEC,
                                   log_level="DEBUG")
 
@@ -80,17 +81,8 @@ class VerifiableConsumerTest(KafkaTest):
     def await_members(self, consumer, num_consumers):
         # Wait until all members have joined the group
         wait_until(lambda: len(consumer.joined_nodes()) == num_consumers,
-                   timeout_sec=60,
+                   timeout_sec=self.session_timeout_sec*2,
                    err_msg="Consumers failed to join in a reasonable amount of time")
-
+        
     def await_all_members(self, consumer):
         self.await_members(consumer, self.num_consumers)
-
-    def await_all_members_stabilized(self, topic, num_partitions, consumer, timeout_sec):
-        # Wait until the group is in STABLE state and the consumers reconcile to a valid assignment
-        wait_until(lambda: self.group_id in self.kafka.list_consumer_groups(state="stable"),
-                   timeout_sec=timeout_sec,
-                   err_msg="Timed out waiting for group %s to transition to STABLE state." % self.group_id)
-        wait_until(lambda: self.valid_assignment(topic, num_partitions, consumer.current_assignment()),
-                   timeout_sec=timeout_sec,
-                   err_msg="Timeout awaiting for the consumers to reconcile to a valid assignment.")

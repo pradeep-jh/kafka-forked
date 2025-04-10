@@ -16,53 +16,27 @@
  */
 package org.apache.kafka.streams.tests;
 
-import org.apache.kafka.common.utils.Exit;
-import org.apache.kafka.common.utils.Utils;
-import org.apache.kafka.streams.StreamsConfig;
-
-import java.io.IOException;
-import java.util.Properties;
+import java.io.File;
 
 public class StreamsEosTest {
 
     /**
-     *  args ::= kafka propFileName command
+     *  args ::= command kafka zookeeper stateDir
      *  command := "run" | "process" | "verify"
      */
-    public static void main(final String[] args) throws IOException {
-        if (args.length < 2) {
-            System.err.println("StreamsEosTest are expecting two parameters: propFile, command; but only see " + args.length + " parameter");
-            Exit.exit(1);
-        }
-
-        final String propFileName = args[0];
-        final String command = args[1];
-
-        final Properties streamsProperties = Utils.loadProps(propFileName);
-        final String kafka = streamsProperties.getProperty(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG);
-        final String processingGuarantee = streamsProperties.getProperty(StreamsConfig.PROCESSING_GUARANTEE_CONFIG);
-
-        if (kafka == null) {
-            System.err.println("No bootstrap kafka servers specified in " + StreamsConfig.BOOTSTRAP_SERVERS_CONFIG);
-            Exit.exit(1);
-        }
-
-        if ("process".equals(command) || "process-complex".equals(command)) {
-            if (!StreamsConfig.EXACTLY_ONCE_V2.equals(processingGuarantee)) {
-
-                System.err.println("processingGuarantee must be " + StreamsConfig.EXACTLY_ONCE_V2);
-                Exit.exit(1);
-            }
-        }
+    public static void main(final String[] args) {
+        final String kafka = args[0];
+        final String stateDir = args.length > 1 ? args[1] : null;
+        final String command = args.length > 2 ? args[2] : null;
 
         System.out.println("StreamsTest instance started");
         System.out.println("kafka=" + kafka);
-        System.out.println("props=" + streamsProperties);
+        System.out.println("stateDir=" + stateDir);
         System.out.println("command=" + command);
         System.out.flush();
 
-        if (command == null || propFileName == null) {
-            Exit.exit(-1);
+        if (command == null || stateDir == null) {
+            System.exit(-1);
         }
 
         switch (command) {
@@ -70,10 +44,10 @@ public class StreamsEosTest {
                 EosTestDriver.generate(kafka);
                 break;
             case "process":
-                new EosTestClient(streamsProperties, false).start();
+                new EosTestClient(kafka, new File(stateDir), false).start();
                 break;
             case "process-complex":
-                new EosTestClient(streamsProperties, true).start();
+                new EosTestClient(kafka, new File(stateDir), true).start();
                 break;
             case "verify":
                 EosTestDriver.verify(kafka, false);
@@ -84,7 +58,7 @@ public class StreamsEosTest {
             default:
                 System.out.println("unknown command: " + command);
                 System.out.flush();
-                Exit.exit(-1);
+                System.exit(-1);
         }
     }
 

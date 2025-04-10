@@ -23,132 +23,119 @@ import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.streams.processor.StateStore;
 import org.apache.kafka.streams.state.KeyValueBytesStoreSupplier;
 import org.apache.kafka.streams.state.KeyValueStore;
-
+import org.easymock.EasyMock;
+import org.easymock.EasyMockRunner;
+import org.easymock.Mock;
+import org.easymock.MockType;
 import org.hamcrest.CoreMatchers;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.mockito.junit.jupiter.MockitoSettings;
-import org.mockito.quality.Strictness;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import java.util.Collections;
 
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.core.IsInstanceOf.instanceOf;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.Mockito.when;
 
-@ExtendWith(MockitoExtension.class)
-@MockitoSettings(strictness = Strictness.STRICT_STUBS)
+@RunWith(EasyMockRunner.class)
 public class KeyValueStoreBuilderTest {
 
-    @Mock
+    @Mock(type = MockType.NICE)
     private KeyValueBytesStoreSupplier supplier;
-    @Mock
+    @Mock(type = MockType.NICE)
     private KeyValueStore<Bytes, byte[]> inner;
     private KeyValueStoreBuilder<String, String> builder;
 
-    public void setUpWithoutInner() {
-        when(supplier.name()).thenReturn("name");
-        when(supplier.metricsScope()).thenReturn("metricScope");
-        builder = new KeyValueStoreBuilder<>(
-                supplier,
-                Serdes.String(),
-                Serdes.String(),
-                new MockTime()
+    @Before
+    public void setUp() throws Exception {
+        EasyMock.expect(supplier.get()).andReturn(inner);
+        EasyMock.expect(supplier.name()).andReturn("name");
+        EasyMock.replay(supplier);
+        builder = new KeyValueStoreBuilder<>(supplier,
+                                             Serdes.String(),
+                                             Serdes.String(),
+                                             new MockTime()
         );
-    }
 
-    public void setUp() {
-        when(supplier.get()).thenReturn(inner);
-        setUpWithoutInner();
     }
 
     @Test
     public void shouldHaveMeteredStoreAsOuterStore() {
-        setUp();
         final KeyValueStore<String, String> store = builder.build();
-        assertThat(store, instanceOf(MeteredKeyValueStore.class));
+        assertThat(store, instanceOf(MeteredKeyValueBytesStore.class));
     }
 
     @Test
     public void shouldHaveChangeLoggingStoreByDefault() {
-        setUp();
         final KeyValueStore<String, String> store = builder.build();
-        assertThat(store, instanceOf(MeteredKeyValueStore.class));
-        final StateStore next = ((WrappedStateStore) store).wrapped();
+        assertThat(store, instanceOf(MeteredKeyValueBytesStore.class));
+        final StateStore next = ((WrappedStateStore) store).wrappedStore();
         assertThat(next, instanceOf(ChangeLoggingKeyValueBytesStore.class));
     }
 
     @Test
     public void shouldNotHaveChangeLoggingStoreWhenDisabled() {
-        setUp();
         final KeyValueStore<String, String> store = builder.withLoggingDisabled().build();
-        final StateStore next = ((WrappedStateStore) store).wrapped();
-        assertThat(next, CoreMatchers.equalTo(inner));
+        final StateStore next = ((WrappedStateStore) store).wrappedStore();
+        assertThat(next, CoreMatchers.<StateStore>equalTo(inner));
     }
 
     @Test
     public void shouldHaveCachingStoreWhenEnabled() {
-        setUp();
         final KeyValueStore<String, String> store = builder.withCachingEnabled().build();
-        final StateStore wrapped = ((WrappedStateStore) store).wrapped();
-        assertThat(store, instanceOf(MeteredKeyValueStore.class));
+        final StateStore wrapped = ((WrappedStateStore) store).wrappedStore();
+        assertThat(store, instanceOf(MeteredKeyValueBytesStore.class));
         assertThat(wrapped, instanceOf(CachingKeyValueStore.class));
     }
 
     @Test
     public void shouldHaveChangeLoggingStoreWhenLoggingEnabled() {
-        setUp();
         final KeyValueStore<String, String> store = builder
-                .withLoggingEnabled(Collections.emptyMap())
+                .withLoggingEnabled(Collections.<String, String>emptyMap())
                 .build();
-        final StateStore wrapped = ((WrappedStateStore) store).wrapped();
-        assertThat(store, instanceOf(MeteredKeyValueStore.class));
+        final StateStore wrapped = ((WrappedStateStore) store).wrappedStore();
+        assertThat(store, instanceOf(MeteredKeyValueBytesStore.class));
         assertThat(wrapped, instanceOf(ChangeLoggingKeyValueBytesStore.class));
-        assertThat(((WrappedStateStore) wrapped).wrapped(), CoreMatchers.equalTo(inner));
+        assertThat(((WrappedStateStore) wrapped).wrappedStore(), CoreMatchers.<StateStore>equalTo(inner));
     }
 
     @Test
     public void shouldHaveCachingAndChangeLoggingWhenBothEnabled() {
-        setUp();
         final KeyValueStore<String, String> store = builder
-                .withLoggingEnabled(Collections.emptyMap())
+                .withLoggingEnabled(Collections.<String, String>emptyMap())
                 .withCachingEnabled()
                 .build();
-        final WrappedStateStore caching = (WrappedStateStore) ((WrappedStateStore) store).wrapped();
-        final WrappedStateStore changeLogging = (WrappedStateStore) caching.wrapped();
-        assertThat(store, instanceOf(MeteredKeyValueStore.class));
+        final WrappedStateStore caching = (WrappedStateStore) ((WrappedStateStore) store).wrappedStore();
+        final WrappedStateStore changeLogging = (WrappedStateStore) caching.wrappedStore();
+        assertThat(store, instanceOf(MeteredKeyValueBytesStore.class));
         assertThat(caching, instanceOf(CachingKeyValueStore.class));
         assertThat(changeLogging, instanceOf(ChangeLoggingKeyValueBytesStore.class));
-        assertThat(changeLogging.wrapped(), CoreMatchers.equalTo(inner));
+        assertThat(changeLogging.wrappedStore(), CoreMatchers.<StateStore>equalTo(inner));
     }
 
-    @SuppressWarnings("all")
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerIfInnerIsNull() {
-        setUpWithoutInner();
-        assertThrows(NullPointerException.class, () -> new KeyValueStoreBuilder<>(null, Serdes.String(),
-            Serdes.String(), new MockTime()));
+        new KeyValueStoreBuilder<>(null, Serdes.String(), Serdes.String(), new MockTime());
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
+    public void shouldThrowNullPointerIfKeySerdeIsNull() {
+        new KeyValueStoreBuilder<>(supplier, null, Serdes.String(), new MockTime());
+    }
+
+    @Test(expected = NullPointerException.class)
+    public void shouldThrowNullPointerIfValueSerdeIsNull() {
+        new KeyValueStoreBuilder<>(supplier, Serdes.String(), null, new MockTime());
+    }
+
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerIfTimeIsNull() {
-        setUpWithoutInner();
-        assertThrows(NullPointerException.class, () -> new KeyValueStoreBuilder<>(supplier, Serdes.String(), Serdes.String(), null));
+        new KeyValueStoreBuilder<>(supplier, Serdes.String(), Serdes.String(), null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerIfMetricsScopeIsNull() {
-        setUpWithoutInner();
-        when(supplier.name()).thenReturn("name");
-        when(supplier.metricsScope()).thenReturn(null);
-
-        final Exception e = assertThrows(NullPointerException.class,
-            () -> new KeyValueStoreBuilder<>(supplier, Serdes.String(), Serdes.String(), new MockTime()));
-        assertThat(e.getMessage(), equalTo("storeSupplier's metricsScope can't be null"));
+        new KeyValueStoreBuilder<>(supplier, Serdes.String(), Serdes.String(), new MockTime());
     }
 
 }

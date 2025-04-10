@@ -23,10 +23,6 @@ package org.apache.kafka.common.security.auth;
  * Note that the {@link org.apache.kafka.common.Configurable} and {@link java.io.Closeable}
  * interfaces are respected if implemented. Additionally, implementations must provide a
  * default no-arg constructor.
- *
- * Note that custom implementations of {@link KafkaPrincipalBuilder}
- * must also implement {@link KafkaPrincipalSerde}, otherwise brokers will not be able to
- * forward requests to the controller.
  */
 public interface KafkaPrincipalBuilder {
     /**

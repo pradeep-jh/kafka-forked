@@ -16,8 +16,6 @@
  */
 package org.apache.kafka.common;
 
-import java.util.Objects;
-
 /**
  * Information about a Kafka node
  */
@@ -30,31 +28,18 @@ public class Node {
     private final String host;
     private final int port;
     private final String rack;
-    private final boolean isFenced;
-
-    // Cache hashCode as it is called in performance sensitive parts of the code (e.g. RecordAccumulator.ready)
-    private Integer hash;
 
     public Node(int id, String host, int port) {
-        this(id, host, port, null, false);
+        this(id, host, port, null);
     }
 
     public Node(int id, String host, int port, String rack) {
+        super();
         this.id = id;
         this.idString = Integer.toString(id);
         this.host = host;
         this.port = port;
         this.rack = rack;
-        this.isFenced = false;
-    }
-
-    public Node(int id, String host, int port, String rack, boolean isFenced) {
-        this.id = id;
-        this.idString = Integer.toString(id);
-        this.host = host;
-        this.port = port;
-        this.rack = rack;
-        this.isFenced = isFenced;
     }
 
     public static Node noNode() {
@@ -113,46 +98,46 @@ public class Node {
         return rack;
     }
 
-    /**
-     * Whether if this node is fenced
-     */
-    public boolean isFenced() {
-        return isFenced;
-    }
-
     @Override
     public int hashCode() {
-        Integer h = this.hash;
-        if (h == null) {
-            int result = 31 + ((host == null) ? 0 : host.hashCode());
-            result = 31 * result + id;
-            result = 31 * result + port;
-            result = 31 * result + ((rack == null) ? 0 : rack.hashCode());
-            result = 31 * result + Objects.hashCode(isFenced);
-            this.hash = result;
-            return result;
-        } else {
-            return h;
-        }
+        final int prime = 31;
+        int result = 1;
+        result = prime * result + ((host == null) ? 0 : host.hashCode());
+        result = prime * result + id;
+        result = prime * result + port;
+        result = prime * result + ((rack == null) ? 0 : rack.hashCode());
+        return result;
     }
 
     @Override
     public boolean equals(Object obj) {
         if (this == obj)
             return true;
-        if (obj == null || getClass() != obj.getClass())
+        if (obj == null)
+            return false;
+        if (getClass() != obj.getClass())
             return false;
         Node other = (Node) obj;
-        return id == other.id &&
-            port == other.port &&
-            Objects.equals(host, other.host) &&
-            Objects.equals(rack, other.rack) &&
-            Objects.equals(isFenced, other.isFenced);
+        if (host == null) {
+            if (other.host != null)
+                return false;
+        } else if (!host.equals(other.host))
+            return false;
+        if (id != other.id)
+            return false;
+        if (port != other.port)
+            return false;
+        if (rack == null) {
+            if (other.rack != null)
+                return false;
+        } else if (!rack.equals(other.rack))
+            return false;
+        return true;
     }
 
     @Override
     public String toString() {
-        return host + ":" + port + " (id: " + idString + " rack: " + rack + " isFenced: " + isFenced + ")";
+        return host + ":" + port + " (id: " + idString + " rack: " + rack + ")";
     }
 
 }

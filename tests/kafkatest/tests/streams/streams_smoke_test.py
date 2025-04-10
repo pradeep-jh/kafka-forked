@@ -13,12 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ducktape.mark import matrix
+
 from ducktape.mark.resource import cluster
 
-from kafkatest.services.kafka import quorum
 from kafkatest.tests.kafka_test import KafkaTest
 from kafkatest.services.streams import StreamsSmokeTestDriverService, StreamsSmokeTestJobRunnerService
+import time
+
 
 class StreamsSmokeTest(KafkaTest):
     """
@@ -30,12 +31,8 @@ class StreamsSmokeTest(KafkaTest):
             'echo' : { 'partitions': 5, 'replication-factor': 1 },
             'data' : { 'partitions': 5, 'replication-factor': 1 },
             'min' : { 'partitions': 5, 'replication-factor': 1 },
-            'min-suppressed' : { 'partitions': 5, 'replication-factor': 1 },
-            'min-raw' : { 'partitions': 5, 'replication-factor': 1 },
             'max' : { 'partitions': 5, 'replication-factor': 1 },
             'sum' : { 'partitions': 5, 'replication-factor': 1 },
-            'sws-raw' : { 'partitions': 5, 'replication-factor': 1 },
-            'sws-suppressed' : { 'partitions': 5, 'replication-factor': 1 },
             'dif' : { 'partitions': 5, 'replication-factor': 1 },
             'cnt' : { 'partitions': 5, 'replication-factor': 1 },
             'avg' : { 'partitions': 5, 'replication-factor': 1 },
@@ -43,68 +40,39 @@ class StreamsSmokeTest(KafkaTest):
             'tagg' : { 'partitions': 5, 'replication-factor': 1 }
         })
 
-        self.test_context = test_context
         self.driver = StreamsSmokeTestDriverService(test_context, self.kafka)
+        self.processor1 = StreamsSmokeTestJobRunnerService(test_context, self.kafka)
+        self.processor2 = StreamsSmokeTestJobRunnerService(test_context, self.kafka)
+        self.processor3 = StreamsSmokeTestJobRunnerService(test_context, self.kafka)
+        self.processor4 = StreamsSmokeTestJobRunnerService(test_context, self.kafka)
 
-    @cluster(num_nodes=8)
-    @matrix(processing_guarantee=['exactly_once_v2', 'at_least_once'],
-            crash=[True, False],
-            metadata_quorum=[quorum.combined_kraft])
-    def test_streams(self, processing_guarantee, crash, metadata_quorum):
-        processor1 = StreamsSmokeTestJobRunnerService(self.test_context, self.kafka, processing_guarantee)
-        processor2 = StreamsSmokeTestJobRunnerService(self.test_context, self.kafka, processing_guarantee)
-        processor3 = StreamsSmokeTestJobRunnerService(self.test_context, self.kafka, processing_guarantee)
+    @cluster(num_nodes=9)
+    def test_streams(self):
+        """
+        Start a few smoke test clients, then repeat start a new one, stop (cleanly) running one a few times.
+        Ensure that all results (stats on values computed by Kafka Streams) are correct.
+        """
 
-        with processor1.node.account.monitor_log(processor1.STDOUT_FILE) as monitor1:
-            processor1.start()
-            monitor1.wait_until('REBALANCING -> RUNNING',
-                               timeout_sec=60,
-                               err_msg="Never saw 'REBALANCING -> RUNNING' message " + str(processor1.node.account)
-                               )
+        self.driver.start()
 
-            self.driver.start()
+        self.processor1.start()
+        self.processor2.start()
 
-            monitor1.wait_until('processed',
-                                timeout_sec=30,
-                                err_msg="Didn't see any processing messages " + str(processor1.node.account)
-                                )
+        time.sleep(15)
 
-            # make sure we're not already done processing (which would invalidate the test)
-            self.driver.node.account.ssh("! grep 'Result Verification' %s" % self.driver.STDOUT_FILE, allow_fail=False)
+        self.processor3.start()
+        self.processor1.stop()
 
-            processor1.stop_nodes(not crash)
+        time.sleep(15)
 
-        with processor2.node.account.monitor_log(processor2.STDOUT_FILE) as monitor2:
-            processor2.start()
-            monitor2.wait_until('REBALANCING -> RUNNING',
-                                timeout_sec=120,
-                                err_msg="Never saw 'REBALANCING -> RUNNING' message " + str(processor2.node.account)
-                                )
-            monitor2.wait_until('processed',
-                                timeout_sec=30,
-                                err_msg="Didn't see any processing messages " + str(processor2.node.account)
-                                )
-
-        # make sure we're not already done processing (which would invalidate the test)
-        self.driver.node.account.ssh("! grep 'Result Verification' %s" % self.driver.STDOUT_FILE, allow_fail=False)
-
-        processor2.stop_nodes(not crash)
-
-        with processor3.node.account.monitor_log(processor3.STDOUT_FILE) as monitor3:
-            processor3.start()
-            monitor3.wait_until('REBALANCING -> RUNNING',
-                                timeout_sec=120,
-                                err_msg="Never saw 'REBALANCING -> RUNNING' message " + str(processor3.node.account)
-                                )
-            # there should still be some data left for this processor to work on.
-            monitor3.wait_until('processed',
-                                timeout_sec=30,
-                                err_msg="Didn't see any processing messages " + str(processor3.node.account)
-                                )
+        self.processor4.start()
 
         self.driver.wait()
         self.driver.stop()
 
-        processor3.stop()
+        self.processor2.stop()
+        self.processor3.stop()
+        self.processor4.stop()
 
-        self.driver.node.account.ssh("grep SUCCESS %s" % self.driver.STDOUT_FILE, allow_fail=False)
+        node = self.driver.node
+        node.account.ssh("grep SUCCESS %s" % self.driver.STDOUT_FILE, allow_fail=False)

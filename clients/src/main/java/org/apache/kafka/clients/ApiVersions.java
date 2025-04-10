@@ -16,6 +16,10 @@
  */
 package org.apache.kafka.clients;
 
+import org.apache.kafka.common.protocol.ApiKeys;
+import org.apache.kafka.common.record.RecordBatch;
+import org.apache.kafka.common.requests.ProduceRequest;
+
 import java.util.HashMap;
 import java.util.Map;
 
@@ -28,42 +32,35 @@ import java.util.Map;
 public class ApiVersions {
 
     private final Map<String, NodeApiVersions> nodeApiVersions = new HashMap<>();
-
-    // The maximum finalized feature epoch of all the node api versions.
-    private long maxFinalizedFeaturesEpoch = -1;
-    private Map<String, Short> finalizedFeatures;
-
-    public static class FinalizedFeaturesInfo {
-        public final long finalizedFeaturesEpoch;
-        public final Map<String, Short> finalizedFeatures;
-        FinalizedFeaturesInfo(long finalizedFeaturesEpoch, Map<String, Short> finalizedFeatures) {
-            this.finalizedFeaturesEpoch = finalizedFeaturesEpoch;
-            this.finalizedFeatures = finalizedFeatures;
-        }
-    }
+    private byte maxUsableProduceMagic = RecordBatch.CURRENT_MAGIC_VALUE;
 
     public synchronized void update(String nodeId, NodeApiVersions nodeApiVersions) {
         this.nodeApiVersions.put(nodeId, nodeApiVersions);
-        if (maxFinalizedFeaturesEpoch < nodeApiVersions.finalizedFeaturesEpoch()) {
-            this.maxFinalizedFeaturesEpoch = nodeApiVersions.finalizedFeaturesEpoch();
-            this.finalizedFeatures = nodeApiVersions.finalizedFeatures();
-        }
+        this.maxUsableProduceMagic = computeMaxUsableProduceMagic();
     }
 
     public synchronized void remove(String nodeId) {
         this.nodeApiVersions.remove(nodeId);
+        this.maxUsableProduceMagic = computeMaxUsableProduceMagic();
     }
 
     public synchronized NodeApiVersions get(String nodeId) {
         return this.nodeApiVersions.get(nodeId);
     }
 
-    public synchronized long getMaxFinalizedFeaturesEpoch() {
-        return maxFinalizedFeaturesEpoch;
+    private byte computeMaxUsableProduceMagic() {
+        // use a magic version which is supported by all brokers to reduce the chance that
+        // we will need to convert the messages when they are ready to be sent.
+        byte maxUsableMagic = RecordBatch.CURRENT_MAGIC_VALUE;
+        for (NodeApiVersions versions : this.nodeApiVersions.values()) {
+            byte nodeMaxUsableMagic = ProduceRequest.requiredMagicForVersion(versions.latestUsableVersion(ApiKeys.PRODUCE));
+            maxUsableMagic = (byte) Math.min(nodeMaxUsableMagic, maxUsableMagic);
+        }
+        return maxUsableMagic;
     }
 
-    public synchronized FinalizedFeaturesInfo getFinalizedFeaturesInfo() {
-        return new FinalizedFeaturesInfo(maxFinalizedFeaturesEpoch, finalizedFeatures);
+    public synchronized byte maxUsableProduceMagic() {
+        return maxUsableProduceMagic;
     }
 
 }

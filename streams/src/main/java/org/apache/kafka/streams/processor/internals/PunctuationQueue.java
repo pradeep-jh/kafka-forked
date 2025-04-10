@@ -26,7 +26,7 @@ public class PunctuationQueue {
 
     private final PriorityQueue<PunctuationSchedule> pq = new PriorityQueue<>();
 
-    public Cancellable schedule(final PunctuationSchedule sched) {
+    public Cancellable schedule(PunctuationSchedule sched) {
         synchronized (pq) {
             pq.add(sched);
         }
@@ -42,20 +42,17 @@ public class PunctuationQueue {
     /**
      * @throws TaskMigratedException if the task producer got fenced (EOS only)
      */
-    boolean maybePunctuate(final long timestamp, final PunctuationType type, final ProcessorNodePunctuator processorNodePunctuator) {
+    boolean mayPunctuate(final long timestamp, final PunctuationType type, final ProcessorNodePunctuator processorNodePunctuator) {
         synchronized (pq) {
             boolean punctuated = false;
             PunctuationSchedule top = pq.peek();
             while (top != null && top.timestamp <= timestamp) {
-                final PunctuationSchedule sched = top;
+                PunctuationSchedule sched = top;
                 pq.poll();
 
                 if (!sched.isCancelled()) {
                     processorNodePunctuator.punctuate(sched.node(), timestamp, type, sched.punctuator());
-                    // sched can be cancelled from within the punctuator
-                    if (!sched.isCancelled()) {
-                        pq.add(sched.next(timestamp));
-                    }
+                    pq.add(sched.next(timestamp));
                     punctuated = true;
                 }
 
@@ -64,24 +61,6 @@ public class PunctuationQueue {
             }
 
             return punctuated;
-        }
-    }
-
-    /**
-     * Returns true if there is a schedule ready to be punctuated.
-     */
-    boolean canPunctuate(final long timestamp) {
-        synchronized (pq) {
-            PunctuationSchedule top = pq.peek();
-            while (top != null && top.timestamp <= timestamp) {
-                if (!top.isCancelled()) {
-                    return true;
-                }
-                // Side-effect: removes cancelled schedules (not externally visible)
-                pq.poll();
-                top = pq.peek();
-            }
-            return false;
         }
     }
 

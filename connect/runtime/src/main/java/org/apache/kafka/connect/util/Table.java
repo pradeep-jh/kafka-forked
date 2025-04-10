@@ -22,10 +22,14 @@ import java.util.Map;
 
 public class Table<R, C, V> {
 
-    private final Map<R, Map<C, V>> table = new HashMap<>();
+    private Map<R, Map<C, V>> table = new HashMap<>();
 
     public V put(R row, C column, V value) {
-        Map<C, V> columns = table.computeIfAbsent(row, k -> new HashMap<>());
+        Map<C, V> columns = table.get(row);
+        if (columns == null) {
+            columns = new HashMap<>();
+            table.put(row, columns);
+        }
         return columns.put(column, value);
     }
 
@@ -58,7 +62,4 @@ public class Table<R, C, V> {
         return Collections.unmodifiableMap(columns);
     }
 
-    public boolean isEmpty() {
-        return table.isEmpty();
-    }
 }

@@ -18,17 +18,8 @@ Define Kafka configuration property names here.
 """
 
 BROKER_ID = "broker.id"
-NODE_ID = "node.id"
-PROCESS_ROLES = "process.roles"
-FIRST_BROKER_PORT = 9092
-FIRST_CONTROLLER_PORT = FIRST_BROKER_PORT + 500
-FIRST_CONTROLLER_ID = 3001
-CLUSTER_ID = "I2eXt9rvSnyhct8BYmW6-w"
 PORT = "port"
 ADVERTISED_HOSTNAME = "advertised.host.name"
-ADVERTISED_LISTENERS = "advertised.listeners"
-LISTENERS = "listeners"
-CONTROLLER_LISTENER_NAMES = "controller.listener.names"
 
 NUM_NETWORK_THREADS = "num.network.threads"
 NUM_IO_THREADS = "num.io.threads"
@@ -44,21 +35,11 @@ LOG_SEGMENT_BYTES = "log.segment.bytes"
 LOG_RETENTION_CHECK_INTERVAL_MS = "log.retention.check.interval.ms"
 LOG_RETENTION_MS = "log.retention.ms"
 LOG_CLEANER_ENABLE = "log.cleaner.enable"
-LOG_INITIAL_TASK_DELAY = "log.initial.task.delay.ms"
-
-METADATA_LOG_DIR = "metadata.log.dir"
-METADATA_LOG_SEGMENT_BYTES = "metadata.log.segment.bytes"
-METADATA_LOG_RETENTION_BYTES = "metadata.max.retention.bytes"
-METADATA_LOG_SEGMENT_MS = "metadata.log.segment.ms"
-METADATA_LOG_BYTES_BETWEEN_SNAPSHOTS = "metadata.log.max.record.bytes.between.snapshots"
 
 AUTO_CREATE_TOPICS_ENABLE = "auto.create.topics.enable"
 
 ZOOKEEPER_CONNECT = "zookeeper.connect"
-ZOOKEEPER_SSL_CLIENT_ENABLE = "zookeeper.ssl.client.enable"
-ZOOKEEPER_CLIENT_CNXN_SOCKET = "zookeeper.clientCnxnSocket"
 ZOOKEEPER_CONNECTION_TIMEOUT_MS = "zookeeper.connection.timeout.ms"
-ZOOKEEPER_SESSION_TIMEOUT_MS = "zookeeper.session.timeout.ms"
 INTER_BROKER_PROTOCOL_VERSION = "inter.broker.protocol.version"
 MESSAGE_FORMAT_VERSION = "log.message.format.version"
 MESSAGE_TIMESTAMP_TYPE = "message.timestamp.type"
@@ -67,20 +48,6 @@ THROTTLING_REPLICATION_RATE_LIMIT = "replication.quota.throttled.rate"
 LOG_FLUSH_INTERVAL_MESSAGE = "log.flush.interval.messages"
 REPLICA_HIGHWATERMARK_CHECKPOINT_INTERVAL_MS = "replica.high.watermark.checkpoint.interval.ms"
 LOG_ROLL_TIME_MS = "log.roll.ms"
-OFFSETS_TOPIC_NUM_PARTITIONS = "offsets.topic.num.partitions"
-
-DELEGATION_TOKEN_MAX_LIFETIME_MS="delegation.token.max.lifetime.ms"
-DELEGATION_TOKEN_EXPIRY_TIME_MS="delegation.token.expiry.time.ms"
-DELEGATION_TOKEN_SECRET_KEY="delegation.token.secret.key"
-SASL_ENABLED_MECHANISMS="sasl.enabled.mechanisms"
-
-GROUP_COORDINATOR_REBALANCE_PROTOCOLS="group.coordinator.rebalance.protocols"
-CONSUMER_GROUP_MIGRATION_POLICY = "group.consumer.migration.policy"
-
-UNSTABLE_API_VERSIONS_ENABLE = "unstable.api.versions.enable"
-SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR ="share.coordinator.state.topic.replication.factor"
-SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR = "share.coordinator.state.topic.min.isr"
-SHARE_GROUP_ENABLE = "group.share.enable"
 
 """
 From KafkaConfig.scala
@@ -162,6 +129,8 @@ From KafkaConfig.scala
   val InterBrokerSecurityProtocolProp = "security.inter.broker.protocol"
   val InterBrokerProtocolVersionProp = "inter.broker.protocol.version"
   /** ********* Controlled shutdown configuration ***********/
+  val ControlledShutdownMaxRetriesProp = "controlled.shutdown.max.retries"
+  val ControlledShutdownRetryBackoffMsProp = "controlled.shutdown.retry.backoff.ms"
   val ControlledShutdownEnableProp = "controlled.shutdown.enable"
   /** ********* Consumer coordinator configuration ***********/
   val ConsumerMinSessionTimeoutMsProp = "consumer.min.session.timeout.ms"
@@ -176,6 +145,7 @@ From KafkaConfig.scala
   val OffsetsRetentionMinutesProp = "offsets.retention.minutes"
   val OffsetsRetentionCheckIntervalMsProp = "offsets.retention.check.interval.ms"
   val OffsetCommitTimeoutMsProp = "offsets.commit.timeout.ms"
+  val OffsetCommitRequiredAcksProp = "offsets.commit.required.acks"
   /** ********* Quota Configuration ***********/
   val ProducerQuotaBytesPerSecondDefaultProp = "quota.producer.default"
   val ConsumerQuotaBytesPerSecondDefaultProp = "quota.consumer.default"

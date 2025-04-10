@@ -17,7 +17,6 @@
 package org.apache.kafka.common;
 
 import java.io.Serializable;
-import java.util.Objects;
 
 
 /**
@@ -31,7 +30,7 @@ public final class TopicPartitionReplica implements Serializable {
     private final String topic;
 
     public TopicPartitionReplica(String topic, int partition, int brokerId) {
-        this.topic = Objects.requireNonNull(topic);
+        this.topic = topic;
         this.partition = partition;
         this.brokerId = brokerId;
     }
@@ -55,7 +54,7 @@ public final class TopicPartitionReplica implements Serializable {
         }
         final int prime = 31;
         int result = 1;
-        result = prime * result + topic.hashCode();
+        result = prime * result + ((topic == null) ? 0 : topic.hashCode());
         result = prime * result + partition;
         result = prime * result + brokerId;
         this.hash = result;
@@ -71,7 +70,18 @@ public final class TopicPartitionReplica implements Serializable {
         if (getClass() != obj.getClass())
             return false;
         TopicPartitionReplica other = (TopicPartitionReplica) obj;
-        return partition == other.partition && brokerId == other.brokerId && topic.equals(other.topic);
+        if (partition != other.partition)
+            return false;
+        if (brokerId != other.brokerId)
+            return false;
+        if (topic == null) {
+            if (other.topic != null) {
+                return false;
+            }
+        } else if (!topic.equals(other.topic)) {
+            return false;
+        }
+        return true;
     }
 
     @Override

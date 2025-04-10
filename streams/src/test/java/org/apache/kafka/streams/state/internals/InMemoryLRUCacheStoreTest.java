@@ -16,36 +16,41 @@
  */
 package org.apache.kafka.streams.state.internals;
 
-import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.streams.KeyValue;
-import org.apache.kafka.streams.processor.StateStoreContext;
+import org.apache.kafka.streams.processor.ProcessorContext;
+import org.apache.kafka.streams.processor.StateStoreSupplier;
 import org.apache.kafka.streams.state.KeyValueStore;
-import org.apache.kafka.streams.state.StoreBuilder;
 import org.apache.kafka.streams.state.Stores;
+import org.junit.Test;
 
-import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.List;
 
 import static org.hamcrest.CoreMatchers.equalTo;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertTrue;
 
 public class InMemoryLRUCacheStoreTest extends AbstractKeyValueStoreTest {
 
     @SuppressWarnings("unchecked")
     @Override
-    protected <K, V> KeyValueStore<K, V> createKeyValueStore(final StateStoreContext context) {
-        final StoreBuilder<KeyValueStore<K, V>> storeBuilder = Stores.keyValueStoreBuilder(
-                Stores.lruMap("my-store", 10),
-                (Serde<K>) context.keySerde(),
-                (Serde<V>) context.valueSerde());
+    protected <K, V> KeyValueStore<K, V> createKeyValueStore(
+            ProcessorContext context,
+            Class<K> keyClass,
+            Class<V> valueClass,
+            boolean useContextSerdes) {
 
-        final KeyValueStore<K, V> store = storeBuilder.build();
+        StateStoreSupplier supplier;
+        if (useContextSerdes) {
+            supplier = Stores.create("my-store").withKeys(context.keySerde()).withValues(context.valueSerde()).inMemory().maxEntries(10).build();
+        } else {
+            supplier = Stores.create("my-store").withKeys(keyClass).withValues(valueClass).inMemory().maxEntries(10).build();
+        }
+
+        KeyValueStore<K, V> store = (KeyValueStore<K, V>) supplier.get();
         store.init(context, store);
-
         return store;
     }
 
@@ -59,7 +64,7 @@ public class InMemoryLRUCacheStoreTest extends AbstractKeyValueStoreTest {
 
         assertThat(store.approximateNumEntries(), equalTo(3L));
 
-        for (final KeyValue<Integer, String> kvPair : kvPairs) {
+        for (KeyValue<Integer, String> kvPair : kvPairs) {
             assertThat(store.get(kvPair.key), equalTo(kvPair.value));
         }
     }
@@ -81,7 +86,7 @@ public class InMemoryLRUCacheStoreTest extends AbstractKeyValueStoreTest {
 
         assertThat(store.approximateNumEntries(), equalTo(3L));
         
-        for (final KeyValue<Integer, String> kvPair : updatedKvPairs) {
+        for (KeyValue<Integer, String> kvPair : updatedKvPairs) {
             assertThat(store.get(kvPair.key), equalTo(kvPair.value));
         }
     }
@@ -152,7 +157,7 @@ public class InMemoryLRUCacheStoreTest extends AbstractKeyValueStoreTest {
 
         // Create the store, which should register with the context and automatically
         // receive the restore entries ...
-        store = createKeyValueStore(driver.context());
+        store = createKeyValueStore(driver.context(), Integer.class, String.class, false);
         context.restore(store.name(), driver.restoredEntries());
         // Verify that the store's changelog does not get more appends ...
         assertEquals(0, driver.numFlushedEntryStored());

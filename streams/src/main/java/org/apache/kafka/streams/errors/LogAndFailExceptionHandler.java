@@ -18,54 +18,29 @@ package org.apache.kafka.streams.errors;
 
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.streams.processor.ProcessorContext;
-
+import org.apache.kafka.streams.processor.internals.StreamThread;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Map;
+
 
 /**
  * Deserialization handler that logs a deserialization exception and then
  * signals the processing pipeline to stop processing more records and fail.
  */
 public class LogAndFailExceptionHandler implements DeserializationExceptionHandler {
-    private static final Logger log = LoggerFactory.getLogger(LogAndFailExceptionHandler.class);
+    private static final Logger log = LoggerFactory.getLogger(StreamThread.class);
 
-    /**
-     * @deprecated Since 3.9. Use {@link #handle(ErrorHandlerContext, ConsumerRecord, Exception)} instead.
-     */
-    @SuppressWarnings("deprecation")
-    @Deprecated
     @Override
     public DeserializationHandlerResponse handle(final ProcessorContext context,
                                                  final ConsumerRecord<byte[], byte[]> record,
                                                  final Exception exception) {
 
-        log.error(
-            "Exception caught during Deserialization, taskId: {}, topic: {}, partition: {}, offset: {}",
-            context.taskId(),
-            record.topic(),
-            record.partition(),
-            record.offset(),
-            exception
-        );
-
-        return DeserializationHandlerResponse.FAIL;
-    }
-
-    @Override
-    public DeserializationHandlerResponse handle(final ErrorHandlerContext context,
-                                                 final ConsumerRecord<byte[], byte[]> record,
-                                                 final Exception exception) {
-
-        log.error(
-            "Exception caught during Deserialization, taskId: {}, topic: {}, partition: {}, offset: {}",
-            context.taskId(),
-            record.topic(),
-            record.partition(),
-            record.offset(),
-            exception
-        );
+        log.error("Exception caught during Deserialization, " +
+                  "taskId: {}, topic: {}, partition: {}, offset: {}",
+                  context.taskId(), record.topic(), record.partition(), record.offset(),
+                  exception);
 
         return DeserializationHandlerResponse.FAIL;
     }

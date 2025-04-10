@@ -16,8 +16,6 @@
  */
 package org.apache.kafka.connect.file;
 
-import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.config.ConfigDef.Importance;
 import org.apache.kafka.common.config.ConfigDef.Type;
@@ -25,24 +23,22 @@ import org.apache.kafka.common.utils.AppInfoParser;
 import org.apache.kafka.connect.connector.Task;
 import org.apache.kafka.connect.sink.SinkConnector;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Very simple sink connector that works with stdout or a file.
+ * Very simple connector that works with the console. This connector supports both source and
+ * sink modes via its 'mode' setting.
  */
 public class FileStreamSinkConnector extends SinkConnector {
 
-    private static final Logger log = LoggerFactory.getLogger(FileStreamSinkConnector.class);
     public static final String FILE_CONFIG = "file";
-    static final ConfigDef CONFIG_DEF = new ConfigDef()
+    private static final ConfigDef CONFIG_DEF = new ConfigDef()
         .define(FILE_CONFIG, Type.STRING, null, Importance.HIGH, "Destination filename. If not specified, the standard output will be used");
 
-    private Map<String, String> props;
+    private String filename;
 
     @Override
     public String version() {
@@ -51,11 +47,7 @@ public class FileStreamSinkConnector extends SinkConnector {
 
     @Override
     public void start(Map<String, String> props) {
-        this.props = props;
-        AbstractConfig config = new AbstractConfig(CONFIG_DEF, props);
-        String filename = config.getString(FILE_CONFIG);
-        filename = (filename == null || filename.isEmpty()) ? "standard output" : filename;
-        log.info("Starting file sink connector writing to {}", filename);
+        filename = props.get(FILE_CONFIG);
     }
 
     @Override
@@ -67,7 +59,10 @@ public class FileStreamSinkConnector extends SinkConnector {
     public List<Map<String, String>> taskConfigs(int maxTasks) {
         ArrayList<Map<String, String>> configs = new ArrayList<>();
         for (int i = 0; i < maxTasks; i++) {
-            configs.add(props);
+            Map<String, String> config = new HashMap<>();
+            if (filename != null)
+                config.put(FILE_CONFIG, filename);
+            configs.add(config);
         }
         return configs;
     }
@@ -80,12 +75,5 @@ public class FileStreamSinkConnector extends SinkConnector {
     @Override
     public ConfigDef config() {
         return CONFIG_DEF;
-    }
-
-    @Override
-    public boolean alterOffsets(Map<String, String> connectorConfig, Map<TopicPartition, Long> offsets) {
-        // Nothing to do here since FileStreamSinkConnector does not manage offsets externally nor does it require any
-        // custom offset validation
-        return true;
     }
 }

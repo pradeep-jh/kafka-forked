@@ -17,55 +17,16 @@
 
 package org.apache.kafka.clients.admin;
 
+import org.apache.kafka.common.annotation.InterfaceStability;
+
 import java.util.Collection;
 
 /**
- * Options for {@link Admin#describeTopics(Collection)}.
+ * Options for {@link AdminClient#describeTopics(Collection)}.
+ *
+ * The API of this class is evolving, see {@link AdminClient} for details.
  */
+@InterfaceStability.Evolving
 public class DescribeTopicsOptions extends AbstractOptions<DescribeTopicsOptions> {
 
-    private boolean includeAuthorizedOperations;
-    private int partitionSizeLimitPerResponse = 2000;
-
-    /**
-     * Set the timeout in milliseconds for this operation or {@code null} if the default api timeout for the
-     * AdminClient should be used.
-     *
-     */
-    // This method is retained to keep binary compatibility with 0.11
-    public DescribeTopicsOptions timeoutMs(Integer timeoutMs) {
-        this.timeoutMs = timeoutMs;
-        return this;
-    }
-
-    public DescribeTopicsOptions includeAuthorizedOperations(boolean includeAuthorizedOperations) {
-        this.includeAuthorizedOperations = includeAuthorizedOperations;
-        return this;
-    }
-
-    /**
-     * Sets the maximum number of partitions to be returned in a single response.
-     * <p>
-     * <strong>This option:</strong>
-     * <ul>
-     *   <li>Is only effective when using topic names (not topic IDs).</li>
-     *   <li>Will not be effective if it is larger than the server-side configuration
-     *       {@code max.request.partition.size.limit}.
-     *   </li>
-     * </ul>
-     * 
-     * @param partitionSizeLimitPerResponse the maximum number of partitions per response
-     */
-    public DescribeTopicsOptions partitionSizeLimitPerResponse(int partitionSizeLimitPerResponse) {
-        this.partitionSizeLimitPerResponse = partitionSizeLimitPerResponse;
-        return this;
-    }
-
-    public boolean includeAuthorizedOperations() {
-        return includeAuthorizedOperations;
-    }
-
-    public int partitionSizeLimitPerResponse() {
-        return partitionSizeLimitPerResponse;
-    }
 }

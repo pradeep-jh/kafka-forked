@@ -19,23 +19,23 @@ package org.apache.kafka.common.errors;
 /**
  * An exception that may indicate the client's metadata is out of date
  */
-public abstract class InvalidMetadataException extends RefreshRetriableException {
+public abstract class InvalidMetadataException extends RetriableException {
 
     private static final long serialVersionUID = 1L;
 
-    protected InvalidMetadataException() {
+    public InvalidMetadataException() {
         super();
     }
 
-    protected InvalidMetadataException(String message) {
+    public InvalidMetadataException(String message) {
         super(message);
     }
 
-    protected InvalidMetadataException(String message, Throwable cause) {
+    public InvalidMetadataException(String message, Throwable cause) {
         super(message, cause);
     }
 
-    protected InvalidMetadataException(Throwable cause) {
+    public InvalidMetadataException(Throwable cause) {
         super(cause);
     }
 

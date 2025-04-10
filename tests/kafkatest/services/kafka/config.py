@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from . import config_property
+import config_property
 
 
 class KafkaConfig(dict):
@@ -22,13 +22,10 @@ class KafkaConfig(dict):
     """
 
     DEFAULTS = {
+        config_property.PORT: 9092,
         config_property.SOCKET_RECEIVE_BUFFER_BYTES: 65536,
         config_property.LOG_DIRS: "/mnt/kafka/kafka-data-logs-1,/mnt/kafka/kafka-data-logs-2",
-        config_property.METADATA_LOG_DIR: "/mnt/kafka/kafka-metadata-logs",
-        config_property.METADATA_LOG_SEGMENT_BYTES: str(9*1024*1024), # 9 MB
-        config_property.METADATA_LOG_BYTES_BETWEEN_SNAPSHOTS: str(10*1024*1024), # 10 MB
-        config_property.METADATA_LOG_RETENTION_BYTES: str(10*1024*1024), # 10 MB
-        config_property.METADATA_LOG_SEGMENT_MS: str(1*60*1000), # one minute
+        config_property.ZOOKEEPER_CONNECTION_TIMEOUT_MS: 2000
     }
 
     def __init__(self, **kwargs):
@@ -36,7 +33,7 @@ class KafkaConfig(dict):
 
         # Set defaults
         for key, val in self.DEFAULTS.items():
-            if key not in self:
+            if not self.has_key(key):
                 self[key] = val
 
     def render(self):

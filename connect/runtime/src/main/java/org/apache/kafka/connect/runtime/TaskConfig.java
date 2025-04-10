@@ -36,10 +36,10 @@ public class TaskConfig extends AbstractConfig {
     private static final String TASK_CLASS_DOC =
             "Name of the class for this task. Must be a subclass of org.apache.kafka.connect.connector.Task";
 
-    private static final ConfigDef CONFIG;
+    private static ConfigDef config;
 
     static {
-        CONFIG = new ConfigDef()
+        config = new ConfigDef()
                 .define(TASK_CLASS_CONFIG, Type.CLASS, Importance.HIGH, TASK_CLASS_DOC);
     }
 
@@ -48,6 +48,6 @@ public class TaskConfig extends AbstractConfig {
     }
 
     public TaskConfig(Map<String, ?> props) {
-        super(CONFIG, props, true);
+        super(config, props, true);
     }
 }

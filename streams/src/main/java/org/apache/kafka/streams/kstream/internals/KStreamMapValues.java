@@ -16,30 +16,29 @@
  */
 package org.apache.kafka.streams.kstream.internals;
 
-import org.apache.kafka.streams.kstream.ValueMapperWithKey;
-import org.apache.kafka.streams.processor.api.ContextualFixedKeyProcessor;
-import org.apache.kafka.streams.processor.api.FixedKeyProcessor;
-import org.apache.kafka.streams.processor.api.FixedKeyProcessorSupplier;
-import org.apache.kafka.streams.processor.api.FixedKeyRecord;
+import org.apache.kafka.streams.kstream.ValueMapper;
+import org.apache.kafka.streams.processor.AbstractProcessor;
+import org.apache.kafka.streams.processor.Processor;
+import org.apache.kafka.streams.processor.ProcessorSupplier;
 
-class KStreamMapValues<KIn, VIn, VOut> implements FixedKeyProcessorSupplier<KIn, VIn, VOut> {
+class KStreamMapValues<K, V, V1> implements ProcessorSupplier<K, V> {
 
-    private final ValueMapperWithKey<? super KIn, ? super VIn, ? extends VOut> mapper;
+    private final ValueMapper<V, V1> mapper;
 
-    public KStreamMapValues(final ValueMapperWithKey<? super KIn, ? super VIn, ? extends VOut> mapper) {
+    public KStreamMapValues(ValueMapper<V, V1> mapper) {
         this.mapper = mapper;
     }
 
     @Override
-    public FixedKeyProcessor<KIn, VIn, VOut> get() {
+    public Processor<K, V> get() {
         return new KStreamMapProcessor();
     }
 
-    private class KStreamMapProcessor extends ContextualFixedKeyProcessor<KIn, VIn, VOut> {
+    private class KStreamMapProcessor extends AbstractProcessor<K, V> {
         @Override
-        public void process(final FixedKeyRecord<KIn, VIn> record) {
-            final VOut newValue = mapper.apply(record.key(), record.value());
-            context().forward(record.withValue(newValue));
+        public void process(final K key, final V value) {
+            V1 newValue = mapper.apply(value);
+            context().forward(key, newValue);
         }
     }
 }

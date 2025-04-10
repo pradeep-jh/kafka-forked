@@ -18,35 +18,33 @@ package org.apache.kafka.connect.connector;
 
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.connect.errors.ConnectException;
-
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.Assert.assertEquals;
 
 public class ConnectorReconfigurationTest {
 
     @Test
-    public void testDefaultReconfigure() {
+    public void testDefaultReconfigure() throws Exception {
         TestConnector conn = new TestConnector(false);
-        conn.reconfigure(Collections.emptyMap());
+        conn.reconfigure(Collections.<String, String>emptyMap());
         assertEquals(conn.stopOrder, 0);
         assertEquals(conn.configureOrder, 1);
     }
 
-    @Test
-    public void testReconfigureStopException() {
+    @Test(expected = ConnectException.class)
+    public void testReconfigureStopException() throws Exception {
         TestConnector conn = new TestConnector(true);
-        assertThrows(ConnectException.class, () -> conn.reconfigure(Collections.emptyMap()));
+        conn.reconfigure(Collections.<String, String>emptyMap());
     }
 
     private static class TestConnector extends Connector {
 
-        private final boolean stopException;
+        private boolean stopException;
         private int order = 0;
         public int stopOrder = -1;
         public int configureOrder = -1;

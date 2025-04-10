@@ -21,21 +21,13 @@ import org.apache.kafka.streams.kstream.GlobalKTable;
 public class GlobalKTableImpl<K, V> implements GlobalKTable<K, V> {
 
     private final KTableValueGetterSupplier<K, V> valueGetterSupplier;
-    private final String queryableStoreName;
 
-    GlobalKTableImpl(final KTableValueGetterSupplier<K, V> valueGetterSupplier,
-                     final String queryableStoreName) {
+    public GlobalKTableImpl(final KTableValueGetterSupplier<K, V> valueGetterSupplier) {
         this.valueGetterSupplier = valueGetterSupplier;
-        this.queryableStoreName = queryableStoreName;
     }
 
     KTableValueGetterSupplier<K, V> valueGetterSupplier() {
         return valueGetterSupplier;
-    }
-
-    @Override
-    public String queryableStoreName() {
-        return queryableStoreName;
     }
 
 }

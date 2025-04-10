@@ -46,7 +46,7 @@ public class CompressionRatioEstimator {
             if (observedRatio > currentEstimation)
                 compressionRatioForTopic[type.id] = Math.max(currentEstimation + COMPRESSION_RATIO_DETERIORATE_STEP, observedRatio);
             else if (observedRatio < currentEstimation) {
-                compressionRatioForTopic[type.id] = Math.max(currentEstimation - COMPRESSION_RATIO_IMPROVING_STEP, observedRatio);
+                compressionRatioForTopic[type.id] = currentEstimation - COMPRESSION_RATIO_IMPROVING_STEP;
             }
         }
         return compressionRatioForTopic[type.id];
@@ -70,6 +70,13 @@ public class CompressionRatioEstimator {
                 compressionRatioForTopic[type.id] = type.rate;
             }
         }
+    }
+
+    /**
+     * Remove the compression ratio estimation for a topic.
+     */
+    public static void removeEstimation(String topic) {
+        COMPRESSION_RATIO.remove(topic);
     }
 
     /**

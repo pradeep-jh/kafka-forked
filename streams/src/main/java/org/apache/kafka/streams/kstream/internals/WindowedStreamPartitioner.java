@@ -16,19 +16,19 @@
  */
 package org.apache.kafka.streams.kstream.internals;
 
-import org.apache.kafka.clients.producer.internals.BuiltInPartitioner;
+import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.streams.kstream.Windowed;
 import org.apache.kafka.streams.processor.StreamPartitioner;
 
-import java.util.Collections;
-import java.util.Optional;
-import java.util.Set;
+import static org.apache.kafka.common.utils.Utils.toPositive;
 
 public class WindowedStreamPartitioner<K, V> implements StreamPartitioner<Windowed<K>, V> {
 
+    private final String topic;
     private final WindowedSerializer<K> serializer;
 
-    public WindowedStreamPartitioner(final WindowedSerializer<K> serializer) {
+    WindowedStreamPartitioner(final String topic, final WindowedSerializer<K> serializer) {
+        this.topic = topic;
         this.serializer = serializer;
     }
 
@@ -37,19 +37,17 @@ public class WindowedStreamPartitioner<K, V> implements StreamPartitioner<Window
      * and the current number of partitions. The partition number id determined by the original key of the windowed key
      * using the same logic as DefaultPartitioner so that the topic is partitioned by the original key.
      *
-     * @param topic the topic name this record is sent to
      * @param windowedKey the key of the record
      * @param value the value of the record
      * @param numPartitions the total number of partitions
      * @return an integer between 0 and {@code numPartitions-1}, or {@code null} if the default partitioning logic should be used
      */
-    @Override
-    public Optional<Set<Integer>> partitions(final String topic, final Windowed<K> windowedKey, final V value, final int numPartitions) {
-        // for windowed key, the key bytes should never be null
+    public Integer partition(final Windowed<K> windowedKey, final V value, final int numPartitions) {
         final byte[] keyBytes = serializer.serializeBaseKey(topic, windowedKey);
 
-        // stick with the same built-in partitioner util functions that producer used
-        // to make sure its behavior is consistent with the producer
-        return Optional.of(Collections.singleton(BuiltInPartitioner.partitionForKey(keyBytes, numPartitions)));
+        // hash the keyBytes to choose a partition
+        return toPositive(Utils.murmur2(keyBytes)) % numPartitions;
     }
+
+
 }

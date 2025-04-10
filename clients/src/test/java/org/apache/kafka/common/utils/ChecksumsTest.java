@@ -17,13 +17,12 @@
 
 package org.apache.kafka.common.utils;
 
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.nio.ByteBuffer;
-import java.util.zip.CRC32C;
 import java.util.zip.Checksum;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.Assert.assertEquals;
 
 public class ChecksumsTest {
 
@@ -37,9 +36,9 @@ public class ChecksumsTest {
     private void doTestUpdateByteBuffer(byte[] bytes, ByteBuffer buffer) {
         buffer.put(bytes);
         buffer.flip();
-        Checksum bufferCrc = new CRC32C();
+        Checksum bufferCrc = new Crc32();
         Checksums.update(bufferCrc, buffer, buffer.remaining());
-        assertEquals(Crc32C.compute(bytes, 0, bytes.length), bufferCrc.getValue());
+        assertEquals(Crc32.crc32(bytes), bufferCrc.getValue());
         assertEquals(0, buffer.position());
     }
 
@@ -56,13 +55,13 @@ public class ChecksumsTest {
         final ByteBuffer buffer = ByteBuffer.allocate(4);
         buffer.putInt(value);
 
-        Checksum crc1 = new CRC32C();
-        Checksum crc2 = new CRC32C();
+        Checksum crc1 = Crc32C.create();
+        Checksum crc2 = Crc32C.create();
 
         Checksums.updateInt(crc1, value);
         crc2.update(buffer.array(), buffer.arrayOffset(), 4);
 
-        assertEquals(crc1.getValue(), crc2.getValue(), "Crc values should be the same");
+        assertEquals("Crc values should be the same", crc1.getValue(), crc2.getValue());
     }
 
     @Test
@@ -71,13 +70,13 @@ public class ChecksumsTest {
         final ByteBuffer buffer = ByteBuffer.allocate(8);
         buffer.putLong(value);
 
-        Checksum crc1 = new CRC32C();
-        Checksum crc2 = new CRC32C();
+        Checksum crc1 = new Crc32();
+        Checksum crc2 = new Crc32();
 
         Checksums.updateLong(crc1, value);
         crc2.update(buffer.array(), buffer.arrayOffset(), 8);
 
-        assertEquals(crc1.getValue(), crc2.getValue(), "Crc values should be the same");
+        assertEquals("Crc values should be the same", crc1.getValue(), crc2.getValue());
     }
 
     private void doTestUpdateByteBufferWithOffsetPosition(byte[] bytes, ByteBuffer buffer, int offset) {
@@ -85,7 +84,7 @@ public class ChecksumsTest {
         buffer.flip();
         buffer.position(offset);
 
-        Checksum bufferCrc = new CRC32C();
+        Checksum bufferCrc = Crc32C.create();
         Checksums.update(bufferCrc, buffer, buffer.remaining());
         assertEquals(Crc32C.compute(bytes, offset, buffer.remaining()), bufferCrc.getValue());
         assertEquals(offset, buffer.position());

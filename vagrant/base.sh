@@ -16,49 +16,38 @@
 
 set -ex
 
-# The version of Kibosh to use for testing.
-# If you update this, also update tests/docker/Dockerfile
-export KIBOSH_VERSION=8841dd392e6fbf02986e2fb1f1ebf04df344b65a
-
-path_to_jdk_cache() {
-  jdk_version=$1
-  echo "/tmp/jdk-${jdk_version}.tar.gz"
-}
-
-fetch_jdk_tgz() {
-  jdk_version=$1
-
-  path=$(path_to_jdk_cache $jdk_version)
-
-  if [ ! -e $path ]; then
-    mkdir -p $(dirname $path)
-    curl --retry 5 -s -L "https://s3-us-west-2.amazonaws.com/kafka-packages/jdk-${jdk_version}.tar.gz" -o $path
-  fi
-}
-
-JDK_MAJOR="${JDK_MAJOR:-17}"
-JDK_FULL="${JDK_FULL:-17-linux-x64}"
-
 if [ -z `which javac` ]; then
     apt-get -y update
-    apt-get install -y software-properties-common python-software-properties binutils java-common
+    apt-get install -y software-properties-common python-software-properties
+    add-apt-repository -y ppa:webupd8team/java
+    apt-get -y update
 
-    echo "===> Installing JDK..." 
+    # Try to share cache. See Vagrantfile for details
+    mkdir -p /var/cache/oracle-jdk7-installer
+    if [ -e "/tmp/oracle-jdk7-installer-cache/" ]; then
+        find /tmp/oracle-jdk7-installer-cache/ -not -empty -exec cp '{}' /var/cache/oracle-jdk7-installer/ \;
+    fi
+    if [ ! -e "/var/cache/oracle-jdk7-installer/jdk-7u80-linux-x64.tar.gz" ]; then
+        # Grab a copy of the JDK since it has moved and original downloader won't work
+        curl -s -L "https://s3-us-west-2.amazonaws.com/kafka-packages/jdk-7u80-linux-x64.tar.gz" -o /var/cache/oracle-jdk7-installer/jdk-7u80-linux-x64.tar.gz
+    fi
 
-    mkdir -p /opt/jdk
-    cd /opt/jdk
-    rm -rf $JDK_MAJOR
-    mkdir -p $JDK_MAJOR
-    cd $JDK_MAJOR
-    fetch_jdk_tgz $JDK_FULL
-    tar x --strip-components=1 -zf $(path_to_jdk_cache $JDK_FULL)
-    for bin in /opt/jdk/$JDK_MAJOR/bin/* ; do 
-      name=$(basename $bin)
-      update-alternatives --install /usr/bin/$name $name $bin 1081 && update-alternatives --set $name $bin
-    done
-    echo -e "export JAVA_HOME=/opt/jdk/$JDK_MAJOR\nexport PATH=\$PATH:\$JAVA_HOME/bin" > /etc/profile.d/jdk.sh
+    /bin/echo debconf shared/accepted-oracle-license-v1-1 select true | /usr/bin/debconf-set-selections
+
+    # oracle-javaX-installer runs wget with a dot progress indicator which ends up
+    # as one line per dot in the build logs.
+    # To avoid this noise we redirect all output to a file that we only show if apt-get fails.
+    echo "Installing JDK..."
+    if ! apt-get -y install oracle-java7-installer oracle-java7-set-default >/tmp/jdk_install.log 2>&1 ; then
+        cat /tmp/jdk_install.log
+        echo "ERROR: JDK install failed"
+        exit 1
+    fi
     echo "JDK installed: $(javac -version 2>&1)"
 
+    if [ -e "/tmp/oracle-jdk7-installer-cache/" ]; then
+        cp -R /var/cache/oracle-jdk7-installer/* /tmp/oracle-jdk7-installer-cache
+    fi
 fi
 
 chmod a+rw /opt
@@ -79,8 +68,8 @@ get_kafka() {
     url_streams_test=https://s3-us-west-2.amazonaws.com/kafka-packages/kafka-streams-$version-test.jar
     if [ ! -d /opt/kafka-$version ]; then
         pushd /tmp
-        curl --retry 5 -O $url
-        curl --retry 5 -O $url_streams_test || true
+        curl -O $url
+        curl -O $url_streams_test || true
         file_tgz=`basename $url`
         file_streams_jar=`basename $url_streams_test` || true
         tar -xzf $file_tgz
@@ -93,87 +82,20 @@ get_kafka() {
     fi
 }
 
-# Install Kibosh
-apt-get update -y && apt-get install -y git cmake pkg-config libfuse-dev
-pushd /opt
-rm -rf /opt/kibosh
-git clone -q  https://github.com/confluentinc/kibosh.git
-pushd "/opt/kibosh"
-git reset --hard $KIBOSH_VERSION
-mkdir "/opt/kibosh/build"
-pushd "/opt/kibosh/build"
-../configure && make -j 2
-popd
-popd
-popd
+# Test multiple Scala versions
+get_kafka 0.8.2.2 2.10
+chmod a+rw /opt/kafka-0.8.2.2
+get_kafka 0.9.0.1 2.11
+chmod a+rw /opt/kafka-0.9.0.1
+get_kafka 0.10.0.1 2.11
+chmod a+rw /opt/kafka-0.10.0.1
+get_kafka 0.10.1.1 2.11
+chmod a+rw /opt/kafka-0.10.1.1
+get_kafka 0.10.2.1 2.11
+chmod a+rw /opt/kafka-0.10.2.1
+get_kafka 0.11.0.0 2.11
+chmod a+rw /opt/kafka-0.11.0.0
 
-# Install iperf
-apt-get install -y iperf traceroute
-
-# Test multiple Kafka versions
-# We want to use the latest Scala version per Kafka version
-# Previously we could not pull in Scala 2.12 builds, because Scala 2.12 requires Java 8 and we were running the system
-# tests with Java 7. We have since switched to Java 8, so 2.0.0 and later use Scala 2.12.
-get_kafka 2.1.1 2.12
-chmod a+rw /opt/kafka-2.1.1
-get_kafka 2.2.2 2.12
-chmod a+rw /opt/kafka-2.2.2
-get_kafka 2.3.1 2.12
-chmod a+rw /opt/kafka-2.3.1
-get_kafka 2.4.1 2.12
-chmod a+rw /opt/kafka-2.4.1
-get_kafka 2.5.1 2.12
-chmod a+rw /opt/kafka-2.5.1
-get_kafka 2.6.3 2.12
-chmod a+rw /opt/kafka-2.6.3
-get_kafka 2.7.2 2.12
-chmod a+rw /opt/kafka-2.7.2
-get_kafka 2.8.2 2.12
-chmod a+rw /opt/kafka-2.8.2
-get_kafka 3.0.2 2.12
-chmod a+rw /opt/kafka-3.0.2
-get_kafka 3.1.2 2.12
-chmod a+rw /opt/kafka-3.1.2
-get_kafka 3.2.3 2.12
-chmod a+rw /opt/kafka-3.2.3
-get_kafka 3.3.2 2.12
-chmod a+rw /opt/kafka-3.3.2
-get_kafka 3.4.1 2.12
-chmod a+rw /opt/kafka-3.4.1
-get_kafka 3.5.2 2.12
-chmod a+rw /opt/kafka-3.5.2
-get_kafka 3.6.2 2.12
-chmod a+rw /opt/kafka-3.6.2
-get_kafka 3.7.2 2.12
-chmod a+rw /opt/kafka-3.7.2
-get_kafka 3.8.1 2.12
-chmod a+rw /opt/kafka-3.8.1
-get_kafka 3.9.0 2.12
-chmod a+rw /opt/kafka-3.9.0
-get_kafka 4.0.0 2.13
-chmod a+rw /opt/kafka-4.0.0
-
-# To ensure the Kafka cluster starts successfully under JDK 17, we need to update the Zookeeper
-# client from version 3.4.x to 3.5.7 in Kafka versions 2.1.1, 2.2.2, and 2.3.1, as the older Zookeeper
-# client is incompatible with JDK 17. See KAFKA-17888 for more details.
-curl -s "https://repo1.maven.org/maven2/org/apache/zookeeper/zookeeper/3.5.7/zookeeper-3.5.7.jar" -o /opt/zookeeper-3.5.7.jar
-curl -s "https://repo1.maven.org/maven2/org/apache/zookeeper/zookeeper-jute/3.5.7/zookeeper-jute-3.5.7.jar" -o /opt/zookeeper-jute-3.5.7.jar
-rm -f /opt/kafka-2.1.1/libs/zookeeper-*
-rm -f /opt/kafka-2.2.2/libs/zookeeper-*
-rm -f /opt/kafka-2.3.1/libs/zookeeper-*
-
-cp /opt/zookeeper-3.5.7.jar /opt/kafka-2.1.1/libs/zookeeper-3.5.7.jar
-chmod a+rw /opt/kafka-2.1.1/libs/zookeeper-3.5.7.jar
-cp /opt/zookeeper-3.5.7.jar /opt/kafka-2.2.2/libs/zookeeper-3.5.7.jar
-chmod a+rw /opt/kafka-2.2.2/libs/zookeeper-3.5.7.jar
-cp /opt/zookeeper-3.5.7.jar /opt/kafka-2.3.1/libs/zookeeper-3.5.7.jar
-chmod a+rw /opt/kafka-2.3.1/libs/zookeeper-3.5.7.jar
-cp /opt/zookeeper-jute-3.5.7.jar /opt/kafka-2.1.1/libs/zookeeper-jute-3.5.7.jar
-chmod a+rw /opt/kafka-2.1.1/libs/zookeeper-jute-3.5.7.jar
-cp /opt/zookeeper-jute-3.5.7.jar /opt/kafka-2.2.2/libs/zookeeper-jute-3.5.7.jar
-chmod a+rw /opt/kafka-2.2.2/libs/zookeeper-jute-3.5.7.jar
-cp /opt/zookeeper-jute-3.5.7.jar /opt/kafka-2.3.1/libs/zookeeper-jute-3.5.7.jar
-chmod a+rw /opt/kafka-2.3.1/libs/zookeeper-jute-3.5.7.jar
 
 # For EC2 nodes, we want to use /mnt, which should have the local disk. On local
 # VMs, we can just create it if it doesn't exist and use it like we'd use
@@ -189,11 +111,3 @@ chmod a+rwx /mnt
 ntpdate -u pool.ntp.org
 # Install ntp daemon - it will automatically start on boot
 apt-get -y install ntp
-
-# Increase the ulimit
-mkdir -p /etc/security/limits.d
-echo "* soft nofile 128000" >> /etc/security/limits.d/nofile.conf
-echo "* hard nofile 128000" >> /etc/security/limits.d/nofile.conf
-
-ulimit -Hn 128000
-ulimit -Sn 128000

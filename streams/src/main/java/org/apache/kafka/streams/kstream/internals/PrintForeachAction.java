@@ -19,30 +19,26 @@ package org.apache.kafka.streams.kstream.internals;
 import org.apache.kafka.streams.kstream.ForeachAction;
 import org.apache.kafka.streams.kstream.KeyValueMapper;
 
-import java.io.OutputStream;
-import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
-import java.nio.charset.StandardCharsets;
 
 public class PrintForeachAction<K, V> implements ForeachAction<K, V> {
 
     private final String label;
     private final PrintWriter printWriter;
-    private final boolean closable;
     private final KeyValueMapper<? super K, ? super V, String> mapper;
-
     /**
-     * Print customized output with given writer. The {@link OutputStream} can be {@link System#out} or the others.
+     * Print customized output with given writer. The PrintWriter can be null in order to
+     * distinguish between {@code System.out} and the others. If the PrintWriter is {@code PrintWriter(System.out)},
+     * then it would close {@code System.out} output stream.
+     * <p>
+     * Afterall, not to pass in {@code PrintWriter(System.out)} but {@code null} instead.
      *
-     * @param outputStream The output stream to write to.
+     * @param printWriter Use {@code System.out.println} if {@code null}.
      * @param mapper The mapper which can allow user to customize output will be printed.
      * @param label The given name will be printed.
      */
-    PrintForeachAction(final OutputStream outputStream,
-                       final KeyValueMapper<? super K, ? super V, String> mapper,
-                       final String label) {
-        this.printWriter = new PrintWriter(new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
-        this.closable = outputStream != System.out && outputStream != System.err;
+    public PrintForeachAction(final PrintWriter printWriter, final KeyValueMapper<? super K, ? super V, String> mapper, final String label) {
+        this.printWriter = printWriter;
         this.mapper = mapper;
         this.label = label;
     }
@@ -50,17 +46,18 @@ public class PrintForeachAction<K, V> implements ForeachAction<K, V> {
     @Override
     public void apply(final K key, final V value) {
         final String data = String.format("[%s]: %s", label, mapper.apply(key, value));
-        printWriter.println(data);
-        if (!closable) {
-            printWriter.flush();
+        if (printWriter == null) {
+            System.out.println(data);
+        } else {
+            printWriter.println(data);
         }
     }
 
     public void close() {
-        if (closable) {
-            printWriter.close();
+        if (printWriter == null) {
+            System.out.flush();
         } else {
-            printWriter.flush();
+            printWriter.close();
         }
     }
 

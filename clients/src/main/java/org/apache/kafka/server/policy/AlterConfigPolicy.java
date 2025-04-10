@@ -21,15 +21,14 @@ import org.apache.kafka.common.config.ConfigResource;
 import org.apache.kafka.common.errors.PolicyViolationException;
 
 import java.util.Map;
-import java.util.Objects;
 
 /**
- * <p>An interface for enforcing a policy on alter configs requests.
+ * An interface for enforcing a policy on alter configs requests.
  *
- * <p>Common use cases are requiring that the replication factor, <code>min.insync.replicas</code> and/or retention settings for a
+ * Common use cases are requiring that the replication factor, min.insync.replicas and/or retention settings for a
  * topic remain within an allowable range.
  *
- * <p>If <code>alter.config.policy.class.name</code> is defined, Kafka will create an instance of the specified class
+ * If <code>alter.config.policy.class.name</code> is defined, Kafka will create an instance of the specified class
  * using the default constructor and will then pass the broker configs to its <code>configure()</code> method. During
  * broker shutdown, the <code>close()</code> method will be invoked so that resources can be released (if necessary).
  */
@@ -62,19 +61,6 @@ public interface AlterConfigPolicy extends Configurable, AutoCloseable {
 
         public ConfigResource resource() {
             return resource;
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(resource, configs);
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if ((o == null) || (!o.getClass().equals(getClass()))) return false;
-            RequestMetadata other = (RequestMetadata) o;
-            return resource.equals(other.resource) &&
-                configs.equals(other.configs);
         }
 
         @Override

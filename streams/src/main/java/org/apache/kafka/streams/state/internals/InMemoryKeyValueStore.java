@@ -16,86 +16,76 @@
  */
 package org.apache.kafka.streams.state.internals;
 
-import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.common.serialization.Serializer;
-import org.apache.kafka.common.utils.Bytes;
+import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.streams.KeyValue;
-import org.apache.kafka.streams.StreamsConfig;
+import org.apache.kafka.streams.processor.ProcessorContext;
+import org.apache.kafka.streams.processor.StateRestoreCallback;
 import org.apache.kafka.streams.processor.StateStore;
-import org.apache.kafka.streams.processor.StateStoreContext;
-import org.apache.kafka.streams.processor.internals.ChangelogRecordDeserializationHelper;
-import org.apache.kafka.streams.processor.internals.RecordBatchingStateRestoreCallback;
-import org.apache.kafka.streams.query.Position;
-import org.apache.kafka.streams.query.PositionBound;
-import org.apache.kafka.streams.query.Query;
-import org.apache.kafka.streams.query.QueryConfig;
-import org.apache.kafka.streams.query.QueryResult;
+import org.apache.kafka.streams.processor.internals.ProcessorStateManager;
 import org.apache.kafka.streams.state.KeyValueIterator;
 import org.apache.kafka.streams.state.KeyValueStore;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.kafka.streams.state.StateSerdes;
 
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.NavigableMap;
-import java.util.NoSuchElementException;
-import java.util.Set;
 import java.util.TreeMap;
-import java.util.TreeSet;
 
-import static org.apache.kafka.streams.StreamsConfig.InternalConfig.IQ_CONSISTENCY_OFFSET_VECTOR_ENABLED;
 
-public class InMemoryKeyValueStore implements KeyValueStore<Bytes, byte[]> {
-
-    private static final Logger LOG = LoggerFactory.getLogger(InMemoryKeyValueStore.class);
-
+public class InMemoryKeyValueStore<K, V> implements KeyValueStore<K, V> {
     private final String name;
-    private final NavigableMap<Bytes, byte[]> map = new TreeMap<>();
-    private final Position position = Position.emptyPosition();
+    private final Serde<K> keySerde;
+    private final Serde<V> valueSerde;
+    private final NavigableMap<K, V> map;
     private volatile boolean open = false;
-    private StateStoreContext context;
 
-    public InMemoryKeyValueStore(final String name) {
+    private StateSerdes<K, V> serdes;
+
+    public InMemoryKeyValueStore(final String name, final Serde<K> keySerde, final Serde<V> valueSerde) {
         this.name = name;
+        this.keySerde = keySerde;
+        this.valueSerde = valueSerde;
+
+        // TODO: when we have serde associated with class types, we can
+        // improve this situation by passing the comparator here.
+        this.map = new TreeMap<>();
+    }
+
+    public KeyValueStore<K, V> enableLogging() {
+        return new InMemoryKeyValueLoggedStore<>(this, keySerde, valueSerde);
     }
 
     @Override
     public String name() {
-        return name;
+        return this.name;
     }
 
     @Override
-    public void init(final StateStoreContext stateStoreContext,
-                     final StateStore root) {
-        if (root != null) {
-            final boolean consistencyEnabled = StreamsConfig.InternalConfig.getBoolean(
-                stateStoreContext.appConfigs(),
-                IQ_CONSISTENCY_OFFSET_VECTOR_ENABLED,
-                false
-            );
-            // register the store
-            open = true;
+    @SuppressWarnings("unchecked")
+    public void init(ProcessorContext context, StateStore root) {
+        // construct the serde
+        this.serdes = new StateSerdes<>(
+            ProcessorStateManager.storeChangelogTopic(context.applicationId(), name),
+            keySerde == null ? (Serde<K>) context.keySerde() : keySerde,
+            valueSerde == null ? (Serde<V>) context.valueSerde() : valueSerde);
 
-            stateStoreContext.register(
-                root,
-                (RecordBatchingStateRestoreCallback) records -> {
-                    synchronized (position) {
-                        for (final ConsumerRecord<byte[], byte[]> record : records) {
-                            put(Bytes.wrap(record.key()), record.value());
-                            ChangelogRecordDeserializationHelper.applyChecksAndUpdatePosition(
-                                record,
-                                consistencyEnabled,
-                                position
-                            );
-                        }
+        if (root != null) {
+            // register the store
+            context.register(root, false, new StateRestoreCallback() {
+                @Override
+                public void restore(byte[] key, byte[] value) {
+                    // this is a delete
+                    if (value == null) {
+                        delete(serdes.keyFrom(key));
+                    } else {
+                        put(serdes.keyFrom(key), serdes.valueFrom(value));
                     }
                 }
-            );
+            });
         }
 
-        open = true;
-        this.context = stateStoreContext;
+        this.open = true;
     }
 
     @Override
@@ -105,127 +95,53 @@ public class InMemoryKeyValueStore implements KeyValueStore<Bytes, byte[]> {
 
     @Override
     public boolean isOpen() {
-        return open;
+        return this.open;
     }
 
     @Override
-    public Position getPosition() {
-        return position;
+    public synchronized V get(K key) {
+        return this.map.get(key);
     }
 
     @Override
-    public <R> QueryResult<R> query(final Query<R> query,
-                                    final PositionBound positionBound,
-                                    final QueryConfig config) {
-
-        return StoreQueryUtils.handleBasicQueries(
-            query,
-            positionBound,
-            config,
-            this,
-            position,
-            context
-        );
+    public synchronized void put(K key, V value) {
+        this.map.put(key, value);
     }
 
     @Override
-    public synchronized byte[] get(final Bytes key) {
-        return map.get(key);
-    }
-
-    @Override
-    public synchronized void put(final Bytes key, final byte[] value) {
-        putInternal(key, value);
-    }
-
-    @Override
-    public synchronized byte[] putIfAbsent(final Bytes key, final byte[] value) {
-        final byte[] originalValue = get(key);
+    public synchronized V putIfAbsent(K key, V value) {
+        V originalValue = get(key);
         if (originalValue == null) {
             put(key, value);
         }
         return originalValue;
     }
 
-    // the unlocked implementation of put method, to avoid multiple lock/unlock cost in `putAll` method
-    private void putInternal(final Bytes key, final byte[] value) {
-        synchronized (position) {
-            if (value == null) {
-                map.remove(key);
-            } else {
-                map.put(key, value);
-            }
-
-            StoreQueryUtils.updatePosition(position, context);
-        }
+    @Override
+    public synchronized void putAll(List<KeyValue<K, V>> entries) {
+        for (KeyValue<K, V> entry : entries)
+            put(entry.key, entry.value);
     }
 
     @Override
-    public synchronized void putAll(final List<KeyValue<Bytes, byte[]>> entries) {
-        for (final KeyValue<Bytes, byte[]> entry : entries) {
-            putInternal(entry.key, entry.value);
-        }
+    public synchronized V delete(K key) {
+        return this.map.remove(key);
     }
 
     @Override
-    public synchronized <PS extends Serializer<P>, P> KeyValueIterator<Bytes, byte[]> prefixScan(final P prefix, final PS prefixKeySerializer) {
-
-        final Bytes from = Bytes.wrap(prefixKeySerializer.serialize(null, prefix));
-        final Bytes to = Bytes.increment(from);
-
-        return new InMemoryKeyValueIterator(map.subMap(from, true, to, false).keySet(), true);
+    public synchronized KeyValueIterator<K, V> range(K from, K to) {
+        return new DelegatingPeekingKeyValueIterator<>(name, new InMemoryKeyValueIterator<>(this.map.subMap(from, true, to, true).entrySet().iterator()));
     }
 
     @Override
-    public synchronized byte[] delete(final Bytes key) {
-        return map.remove(key);
-    }
-
-    @Override
-    public synchronized KeyValueIterator<Bytes, byte[]> range(final Bytes from, final Bytes to) {
-        return range(from, to, true);
-    }
-
-    @Override
-    public synchronized KeyValueIterator<Bytes, byte[]> reverseRange(final Bytes from, final Bytes to) {
-        return range(from, to, false);
-    }
-
-    private KeyValueIterator<Bytes, byte[]> range(final Bytes from, final Bytes to, final boolean forward) {
-        if (from == null && to == null) {
-            return getKeyValueIterator(map.keySet(), forward);
-        } else if (from == null) {
-            return getKeyValueIterator(map.headMap(to, true).keySet(), forward);
-        } else if (to == null) {
-            return getKeyValueIterator(map.tailMap(from, true).keySet(), forward);
-        } else if (from.compareTo(to) > 0) {
-            LOG.warn("Returning empty iterator for fetch with invalid key range: from > to. " +
-                    "This may be due to range arguments set in the wrong order, " +
-                    "or serdes that don't preserve ordering when lexicographically comparing the serialized bytes. " +
-                    "Note that the built-in numerical serdes do not follow this for negative numbers");
-            return KeyValueIterators.emptyIterator();
-        } else {
-            return getKeyValueIterator(map.subMap(from, true, to, true).keySet(), forward);
-        }
-    }
-
-    private KeyValueIterator<Bytes, byte[]> getKeyValueIterator(final Set<Bytes> rangeSet, final boolean forward) {
-        return new InMemoryKeyValueIterator(rangeSet, forward);
-    }
-
-    @Override
-    public synchronized KeyValueIterator<Bytes, byte[]> all() {
-        return range(null, null);
-    }
-
-    @Override
-    public synchronized KeyValueIterator<Bytes, byte[]> reverseAll() {
-        return new InMemoryKeyValueIterator(map.keySet(), false);
+    public synchronized KeyValueIterator<K, V> all() {
+        final TreeMap<K, V> copy = new TreeMap<>(this.map);
+        return new DelegatingPeekingKeyValueIterator<>(name, new InMemoryKeyValueIterator<>(copy.entrySet().iterator()));
     }
 
     @Override
     public long approximateNumEntries() {
-        return map.size();
+        return this.map.size();
     }
 
     @Override
@@ -235,64 +151,41 @@ public class InMemoryKeyValueStore implements KeyValueStore<Bytes, byte[]> {
 
     @Override
     public void close() {
-        map.clear();
-        open = false;
+        this.map.clear();
+        this.open = false;
     }
 
-    private class InMemoryKeyValueIterator implements KeyValueIterator<Bytes, byte[]> {
-        private final Iterator<Bytes> iter;
-        private Bytes currentKey;
-        private Boolean iteratorOpen = true;
+    private static class InMemoryKeyValueIterator<K, V> implements KeyValueIterator<K, V> {
+        private final Iterator<Map.Entry<K, V>> iter;
 
-        private InMemoryKeyValueIterator(final Set<Bytes> keySet, final boolean forward) {
-            if (forward) {
-                this.iter = new TreeSet<>(keySet).iterator();
-            } else {
-                this.iter = new TreeSet<>(keySet).descendingIterator();
-            }
+        private InMemoryKeyValueIterator(Iterator<Map.Entry<K, V>> iter) {
+            this.iter = iter;
         }
 
         @Override
         public boolean hasNext() {
-            if (!iteratorOpen) {
-                throw new IllegalStateException(String.format("Iterator for store %s has already been closed.", name));
-            }
-            if (currentKey != null) {
-                if (map.containsKey(currentKey)) {
-                    return true;
-                } else {
-                    currentKey = null;
-                    return hasNext();
-                }
-            }
-            if (!iter.hasNext()) {
-                return false;
-            }
-            currentKey = iter.next();
-            return hasNext();
+            return iter.hasNext();
         }
 
         @Override
-        public KeyValue<Bytes, byte[]> next() {
-            if (!hasNext()) {
-                throw new NoSuchElementException();
-            }
-            final KeyValue<Bytes, byte[]> ret = new KeyValue<>(currentKey, map.get(currentKey));
-            currentKey = null;
-            return ret;
+        public KeyValue<K, V> next() {
+            Map.Entry<K, V> entry = iter.next();
+            return new KeyValue<>(entry.getKey(), entry.getValue());
+        }
+
+        @Override
+        public void remove() {
+            iter.remove();
         }
 
         @Override
         public void close() {
-            iteratorOpen = false;
+            // do nothing
         }
 
         @Override
-        public Bytes peekNextKey() {
-            if (!hasNext()) {
-                throw new NoSuchElementException();
-            }
-            return currentKey;
+        public K peekNextKey() {
+            throw new UnsupportedOperationException("peekNextKey() not supported in " + getClass().getName());
         }
     }
 }

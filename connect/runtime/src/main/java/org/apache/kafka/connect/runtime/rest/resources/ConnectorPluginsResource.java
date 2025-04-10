@@ -16,48 +16,32 @@
  */
 package org.apache.kafka.connect.runtime.rest.resources;
 
+import org.apache.kafka.connect.connector.Connector;
 import org.apache.kafka.connect.runtime.ConnectorConfig;
 import org.apache.kafka.connect.runtime.Herder;
 import org.apache.kafka.connect.runtime.isolation.PluginDesc;
-import org.apache.kafka.connect.runtime.isolation.PluginType;
-import org.apache.kafka.connect.runtime.isolation.PluginUtils;
-import org.apache.kafka.connect.runtime.rest.RestRequestTimeout;
 import org.apache.kafka.connect.runtime.rest.entities.ConfigInfos;
-import org.apache.kafka.connect.runtime.rest.entities.ConfigKeyInfo;
-import org.apache.kafka.connect.runtime.rest.entities.PluginInfo;
-import org.apache.kafka.connect.runtime.rest.errors.ConnectRestException;
-import org.apache.kafka.connect.util.FutureCallback;
-import org.apache.kafka.connect.util.Stage;
-import org.apache.kafka.connect.util.StagedTimeoutException;
+import org.apache.kafka.connect.runtime.rest.entities.ConnectorPluginInfo;
+import org.apache.kafka.connect.tools.MockConnector;
+import org.apache.kafka.connect.tools.MockSinkConnector;
+import org.apache.kafka.connect.tools.MockSourceConnector;
+import org.apache.kafka.connect.tools.SchemaSourceConnector;
+import org.apache.kafka.connect.tools.VerifiableSinkConnector;
+import org.apache.kafka.connect.tools.VerifiableSourceConnector;
 
-import org.apache.maven.artifact.versioning.InvalidVersionSpecificationException;
-import org.apache.maven.artifact.versioning.VersionRange;
-
-import java.time.Instant;
-import java.util.Collection;
+import javax.ws.rs.BadRequestException;
+import javax.ws.rs.Consumes;
+import javax.ws.rs.GET;
+import javax.ws.rs.PUT;
+import javax.ws.rs.Path;
+import javax.ws.rs.PathParam;
+import javax.ws.rs.Produces;
+import javax.ws.rs.core.MediaType;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-import java.util.stream.Collectors;
-
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
-import jakarta.inject.Inject;
-import jakarta.ws.rs.BadRequestException;
-import jakarta.ws.rs.Consumes;
-import jakarta.ws.rs.DefaultValue;
-import jakarta.ws.rs.GET;
-import jakarta.ws.rs.PUT;
-import jakarta.ws.rs.Path;
-import jakarta.ws.rs.PathParam;
-import jakarta.ws.rs.Produces;
-import jakarta.ws.rs.QueryParam;
-import jakarta.ws.rs.core.MediaType;
-import jakarta.ws.rs.core.Response;
 
 @Path("/connector-plugins")
 @Produces(MediaType.APPLICATION_JSON)
@@ -66,109 +50,54 @@ public class ConnectorPluginsResource {
 
     private static final String ALIAS_SUFFIX = "Connector";
     private final Herder herder;
-    private final Set<PluginInfo> connectorPlugins;
-    private final RestRequestTimeout requestTimeout;
+    private final List<ConnectorPluginInfo> connectorPlugins;
 
-    @Inject
-    public ConnectorPluginsResource(Herder herder, RestRequestTimeout requestTimeout) {
+    private static final List<Class<? extends Connector>> CONNECTOR_EXCLUDES = Arrays.asList(
+            VerifiableSourceConnector.class, VerifiableSinkConnector.class,
+            MockConnector.class, MockSourceConnector.class, MockSinkConnector.class,
+            SchemaSourceConnector.class
+    );
+
+    public ConnectorPluginsResource(Herder herder) {
         this.herder = herder;
-        this.requestTimeout = requestTimeout;
-        this.connectorPlugins = new LinkedHashSet<>();
-
-        // TODO: improve once plugins are allowed to be added/removed during runtime.
-        addConnectorPlugins(herder.plugins().sinkConnectors());
-        addConnectorPlugins(herder.plugins().sourceConnectors());
-        addConnectorPlugins(herder.plugins().transformations());
-        addConnectorPlugins(herder.plugins().predicates());
-        addConnectorPlugins(herder.plugins().converters());
-        addConnectorPlugins(herder.plugins().headerConverters());
-    }
-
-    private <T> void addConnectorPlugins(Collection<PluginDesc<T>> plugins) {
-        plugins.stream()
-                .map(PluginInfo::new)
-                .forEach(connectorPlugins::add);
+        this.connectorPlugins = new ArrayList<>();
     }
 
     @PUT
-    @Path("/{pluginName}/config/validate")
-    @Operation(summary = "Validate the provided configuration against the configuration definition for the specified pluginName")
+    @Path("/{connectorType}/config/validate")
     public ConfigInfos validateConfigs(
-        final @PathParam("pluginName") String pluginName,
+        final @PathParam("connectorType") String connType,
         final Map<String, String> connectorConfig
     ) throws Throwable {
         String includedConnType = connectorConfig.get(ConnectorConfig.CONNECTOR_CLASS_CONFIG);
         if (includedConnType != null
-            && !normalizedPluginName(includedConnType).endsWith(normalizedPluginName(pluginName))) {
+            && !normalizedPluginName(includedConnType).endsWith(normalizedPluginName(connType))) {
             throw new BadRequestException(
                 "Included connector type " + includedConnType + " does not match request type "
-                    + pluginName
+                    + connType
             );
         }
 
-        // the validated configs don't need to be logged
-        FutureCallback<ConfigInfos> validationCallback = new FutureCallback<>();
-        herder.validateConnectorConfig(connectorConfig, validationCallback, false);
-
-        try {
-            return validationCallback.get(requestTimeout.timeoutMs(), TimeUnit.MILLISECONDS);
-        } catch (StagedTimeoutException e) {
-            Stage stage = e.stage();
-            String message;
-            if (stage.completed() != null) {
-                message = "Request timed out. The last operation the worker completed was "
-                        + stage.description() + ", which began at "
-                        + Instant.ofEpochMilli(stage.started()) + " and completed at "
-                        + Instant.ofEpochMilli(stage.completed());
-            } else {
-                message = "Request timed out. The worker is currently "
-                        + stage.description() + ", which began at "
-                        + Instant.ofEpochMilli(stage.started());
-            }
-            // This timeout is for the operation itself. None of the timeout error codes are relevant, so internal server
-            // error is the best option
-            throw new ConnectRestException(Response.Status.INTERNAL_SERVER_ERROR.getStatusCode(), message);
-        } catch (TimeoutException e) {
-            // This timeout is for the operation itself. None of the timeout error codes are relevant, so internal server
-            // error is the best option
-            throw new ConnectRestException(Response.Status.INTERNAL_SERVER_ERROR.getStatusCode(), "Request timed out");
-        } catch (InterruptedException e) {
-            throw new ConnectRestException(Response.Status.INTERNAL_SERVER_ERROR.getStatusCode(), "Request interrupted");
-        }
+        return herder.validateConnectorConfig(connectorConfig);
     }
 
     @GET
-    @Operation(summary = "List all connector plugins installed")
-    public List<PluginInfo> listConnectorPlugins(
-            @DefaultValue("true") @QueryParam("connectorsOnly") @Parameter(description = "Whether to list only connectors instead of all plugins") boolean connectorsOnly
-    ) {
-        synchronized (this) {
-            if (connectorsOnly) {
-                return Collections.unmodifiableList(connectorPlugins.stream()
-                        .filter(p -> PluginType.SINK.toString().equals(p.type()) || PluginType.SOURCE.toString().equals(p.type()))
-                        .collect(Collectors.toList()));
-            } else {
-                return List.copyOf(connectorPlugins);
-            }
-        }
+    @Path("/")
+    public List<ConnectorPluginInfo> listConnectorPlugins() {
+        return getConnectorPlugins();
     }
 
-    @GET
-    @Path("/{pluginName}/config")
-    @Operation(summary = "Get the configuration definition for the specified pluginName")
-    public List<ConfigKeyInfo> getConnectorConfigDef(final @PathParam("pluginName") String pluginName,
-                                                     final @QueryParam("version") @DefaultValue("latest") String version) {
-
-        VersionRange range = null;
-        try {
-            range = PluginUtils.connectorVersionRequirement(version);
-        } catch (InvalidVersionSpecificationException e) {
-            throw new BadRequestException("Invalid version specification: " + version, e);
+    // TODO: improve once plugins are allowed to be added/removed during runtime.
+    private synchronized List<ConnectorPluginInfo> getConnectorPlugins() {
+        if (connectorPlugins.isEmpty()) {
+            for (PluginDesc<Connector> plugin : herder.plugins().connectors()) {
+                if (!CONNECTOR_EXCLUDES.contains(plugin.pluginClass())) {
+                    connectorPlugins.add(new ConnectorPluginInfo(plugin));
+                }
+            }
         }
 
-        synchronized (this) {
-            return herder.connectorPluginConfig(pluginName, range);
-        }
+        return Collections.unmodifiableList(connectorPlugins);
     }
 
     private String normalizedPluginName(String pluginName) {
@@ -177,5 +106,4 @@ public class ConnectorPluginsResource {
             ? pluginName.substring(0, pluginName.length() - ALIAS_SUFFIX.length())
             : pluginName;
     }
-
 }

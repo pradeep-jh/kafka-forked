@@ -17,121 +17,118 @@
 package org.apache.kafka.common.security.auth;
 
 import org.apache.kafka.common.config.SaslConfigs;
+import org.apache.kafka.common.network.Authenticator;
+import org.apache.kafka.common.network.TransportLayer;
 import org.apache.kafka.common.security.authenticator.DefaultKafkaPrincipalBuilder;
+import org.apache.kafka.common.security.kerberos.KerberosName;
 import org.apache.kafka.common.security.kerberos.KerberosShortNamer;
-import org.apache.kafka.common.security.scram.internals.ScramMechanism;
-import org.apache.kafka.common.security.ssl.SslPrincipalMapper;
+import org.apache.kafka.common.security.scram.ScramMechanism;
+import org.easymock.EasyMock;
+import org.easymock.EasyMockSupport;
+import org.junit.Test;
 
-import org.junit.jupiter.api.Test;
-
+import javax.net.ssl.SSLSession;
+import javax.security.sasl.SaslServer;
 import java.net.InetAddress;
 import java.security.Principal;
 
-import javax.net.ssl.SSLSession;
-import javax.security.auth.x500.X500Principal;
-import javax.security.sasl.SaslServer;
+import static org.junit.Assert.assertEquals;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.atLeastOnce;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+public class DefaultKafkaPrincipalBuilderTest extends EasyMockSupport {
 
-public class DefaultKafkaPrincipalBuilderTest {
+    @Test
+    @SuppressWarnings("deprecation")
+    public void testUseOldPrincipalBuilderForPlaintextIfProvided() throws Exception {
+        TransportLayer transportLayer = mock(TransportLayer.class);
+        Authenticator authenticator = mock(Authenticator.class);
+        PrincipalBuilder oldPrincipalBuilder = mock(PrincipalBuilder.class);
+
+        EasyMock.expect(oldPrincipalBuilder.buildPrincipal(transportLayer, authenticator))
+                .andReturn(new DummyPrincipal("foo"));
+        oldPrincipalBuilder.close();
+        EasyMock.expectLastCall();
+
+        replayAll();
+
+        DefaultKafkaPrincipalBuilder builder = DefaultKafkaPrincipalBuilder.fromOldPrincipalBuilder(authenticator,
+                transportLayer, oldPrincipalBuilder, null);
+
+        KafkaPrincipal principal = builder.build(new PlaintextAuthenticationContext(InetAddress.getLocalHost()));
+        assertEquals(KafkaPrincipal.USER_TYPE, principal.getPrincipalType());
+        assertEquals("foo", principal.getName());
+
+        builder.close();
+
+        verifyAll();
+    }
 
     @Test
     public void testReturnAnonymousPrincipalForPlaintext() throws Exception {
-        DefaultKafkaPrincipalBuilder builder = new DefaultKafkaPrincipalBuilder(null, null);
-        assertEquals(KafkaPrincipal.ANONYMOUS, builder.build(
-                new PlaintextAuthenticationContext(InetAddress.getLocalHost(), SecurityProtocol.PLAINTEXT.name())));
+        DefaultKafkaPrincipalBuilder builder = new DefaultKafkaPrincipalBuilder(null);
+        assertEquals(KafkaPrincipal.ANONYMOUS, builder.build(new PlaintextAuthenticationContext(InetAddress.getLocalHost())));
+    }
+
+    @Test
+    @SuppressWarnings("deprecation")
+    public void testUseOldPrincipalBuilderForSslIfProvided() throws Exception {
+        TransportLayer transportLayer = mock(TransportLayer.class);
+        Authenticator authenticator = mock(Authenticator.class);
+        PrincipalBuilder oldPrincipalBuilder = mock(PrincipalBuilder.class);
+        SSLSession session = mock(SSLSession.class);
+
+        EasyMock.expect(oldPrincipalBuilder.buildPrincipal(transportLayer, authenticator))
+                .andReturn(new DummyPrincipal("foo"));
+        oldPrincipalBuilder.close();
+        EasyMock.expectLastCall();
+
+        replayAll();
+
+        DefaultKafkaPrincipalBuilder builder = DefaultKafkaPrincipalBuilder.fromOldPrincipalBuilder(authenticator,
+                transportLayer, oldPrincipalBuilder, null);
+
+        KafkaPrincipal principal = builder.build(new SslAuthenticationContext(session, InetAddress.getLocalHost()));
+        assertEquals(KafkaPrincipal.USER_TYPE, principal.getPrincipalType());
+        assertEquals("foo", principal.getName());
+
+        builder.close();
+
+        verifyAll();
     }
 
     @Test
     public void testUseSessionPeerPrincipalForSsl() throws Exception {
         SSLSession session = mock(SSLSession.class);
 
-        when(session.getPeerPrincipal()).thenReturn(new DummyPrincipal("foo"));
+        EasyMock.expect(session.getPeerPrincipal()).andReturn(new DummyPrincipal("foo"));
 
-        DefaultKafkaPrincipalBuilder builder = new DefaultKafkaPrincipalBuilder(null, null);
+        replayAll();
 
-        KafkaPrincipal principal = builder.build(
-                new SslAuthenticationContext(session, InetAddress.getLocalHost(), SecurityProtocol.PLAINTEXT.name()));
+        DefaultKafkaPrincipalBuilder builder = new DefaultKafkaPrincipalBuilder(null);
+
+        KafkaPrincipal principal = builder.build(new SslAuthenticationContext(session, InetAddress.getLocalHost()));
         assertEquals(KafkaPrincipal.USER_TYPE, principal.getPrincipalType());
         assertEquals("foo", principal.getName());
 
-        verify(session, atLeastOnce()).getPeerPrincipal();
-    }
-
-    @Test
-    public void testPrincipalIfSSLPeerIsNotAuthenticated() throws Exception {
-        SSLSession session = mock(SSLSession.class);
-
-        when(session.getPeerPrincipal()).thenReturn(KafkaPrincipal.ANONYMOUS);
-
-        DefaultKafkaPrincipalBuilder builder = new DefaultKafkaPrincipalBuilder(null, null);
-
-        KafkaPrincipal principal = builder.build(
-                new SslAuthenticationContext(session, InetAddress.getLocalHost(), SecurityProtocol.PLAINTEXT.name()));
-        assertEquals(KafkaPrincipal.ANONYMOUS, principal);
-
-        verify(session, atLeastOnce()).getPeerPrincipal();
-    }
-
-
-    @Test
-    public void testPrincipalWithSslPrincipalMapper() throws Exception {
-        SSLSession session = mock(SSLSession.class);
-
-        when(session.getPeerPrincipal()).thenReturn(new X500Principal("CN=Duke, OU=ServiceUsers, O=Org, C=US"))
-                                        .thenReturn(new X500Principal("CN=Duke, OU=SME, O=mycp, L=Fulton, ST=MD, C=US"))
-                                        .thenReturn(new X500Principal("CN=duke, OU=JavaSoft, O=Sun Microsystems"))
-                                        .thenReturn(new X500Principal("OU=JavaSoft, O=Sun Microsystems, C=US"));
-
-        String rules = String.join(", ",
-            "RULE:^CN=(.*),OU=ServiceUsers.*$/$1/L",
-            "RULE:^CN=(.*),OU=(.*),O=(.*),L=(.*),ST=(.*),C=(.*)$/$1@$2/L",
-            "RULE:^.*[Cc][Nn]=([a-zA-Z0-9.]*).*$/$1/U",
-            "DEFAULT"
-        );
-
-        SslPrincipalMapper mapper = SslPrincipalMapper.fromRules(rules);
-        DefaultKafkaPrincipalBuilder builder = new DefaultKafkaPrincipalBuilder(null, mapper);
-
-        SslAuthenticationContext sslContext = new SslAuthenticationContext(session, InetAddress.getLocalHost(), SecurityProtocol.PLAINTEXT.name());
-
-        KafkaPrincipal principal = builder.build(sslContext);
-        assertEquals("duke", principal.getName());
-
-        principal = builder.build(sslContext);
-        assertEquals("duke@sme", principal.getName());
-
-        principal = builder.build(sslContext);
-        assertEquals("DUKE", principal.getName());
-
-        principal = builder.build(sslContext);
-        assertEquals("OU=JavaSoft,O=Sun Microsystems,C=US", principal.getName());
-
-        verify(session, times(4)).getPeerPrincipal();
+        verifyAll();
     }
 
     @Test
     public void testPrincipalBuilderScram() throws Exception {
         SaslServer server = mock(SaslServer.class);
 
-        when(server.getMechanismName()).thenReturn(ScramMechanism.SCRAM_SHA_256.mechanismName());
-        when(server.getAuthorizationID()).thenReturn("foo");
+        EasyMock.expect(server.getMechanismName()).andReturn(ScramMechanism.SCRAM_SHA_256.mechanismName());
+        EasyMock.expect(server.getAuthorizationID()).andReturn("foo");
 
-        DefaultKafkaPrincipalBuilder builder = new DefaultKafkaPrincipalBuilder(null, null);
+        replayAll();
+
+        DefaultKafkaPrincipalBuilder builder = new DefaultKafkaPrincipalBuilder(null);
 
         KafkaPrincipal principal = builder.build(new SaslAuthenticationContext(server,
-                SecurityProtocol.SASL_PLAINTEXT, InetAddress.getLocalHost(), SecurityProtocol.SASL_PLAINTEXT.name()));
+                SecurityProtocol.SASL_PLAINTEXT, InetAddress.getLocalHost()));
         assertEquals(KafkaPrincipal.USER_TYPE, principal.getPrincipalType());
         assertEquals("foo", principal.getName());
 
-        verify(server, atLeastOnce()).getMechanismName();
-        verify(server, atLeastOnce()).getAuthorizationID();
+        verifyAll();
     }
 
     @Test
@@ -139,45 +136,21 @@ public class DefaultKafkaPrincipalBuilderTest {
         SaslServer server = mock(SaslServer.class);
         KerberosShortNamer kerberosShortNamer = mock(KerberosShortNamer.class);
 
-        when(server.getMechanismName()).thenReturn(SaslConfigs.GSSAPI_MECHANISM);
-        when(server.getAuthorizationID()).thenReturn("foo/host@REALM.COM");
-        when(kerberosShortNamer.shortName(any())).thenReturn("foo");
+        EasyMock.expect(server.getMechanismName()).andReturn(SaslConfigs.GSSAPI_MECHANISM);
+        EasyMock.expect(server.getAuthorizationID()).andReturn("foo/host@REALM.COM");
+        EasyMock.expect(kerberosShortNamer.shortName(EasyMock.anyObject(KerberosName.class)))
+                .andReturn("foo");
 
-        DefaultKafkaPrincipalBuilder builder = new DefaultKafkaPrincipalBuilder(kerberosShortNamer, null);
+        replayAll();
+
+        DefaultKafkaPrincipalBuilder builder = new DefaultKafkaPrincipalBuilder(kerberosShortNamer);
 
         KafkaPrincipal principal = builder.build(new SaslAuthenticationContext(server,
-                SecurityProtocol.SASL_PLAINTEXT, InetAddress.getLocalHost(), SecurityProtocol.SASL_PLAINTEXT.name()));
+                SecurityProtocol.SASL_PLAINTEXT, InetAddress.getLocalHost()));
         assertEquals(KafkaPrincipal.USER_TYPE, principal.getPrincipalType());
         assertEquals("foo", principal.getName());
 
-        verify(server, atLeastOnce()).getMechanismName();
-        verify(server, atLeastOnce()).getAuthorizationID();
-        verify(kerberosShortNamer, atLeastOnce()).shortName(any());
-    }
-
-    @Test
-    public void testPrincipalBuilderSerde() throws Exception {
-        SaslServer server = mock(SaslServer.class);
-        KerberosShortNamer kerberosShortNamer = mock(KerberosShortNamer.class);
-
-        when(server.getMechanismName()).thenReturn(SaslConfigs.GSSAPI_MECHANISM);
-        when(server.getAuthorizationID()).thenReturn("foo/host@REALM.COM");
-        when(kerberosShortNamer.shortName(any())).thenReturn("foo");
-
-        DefaultKafkaPrincipalBuilder builder = new DefaultKafkaPrincipalBuilder(kerberosShortNamer, null);
-
-        KafkaPrincipal principal = builder.build(new SaslAuthenticationContext(server,
-            SecurityProtocol.SASL_PLAINTEXT, InetAddress.getLocalHost(), SecurityProtocol.SASL_PLAINTEXT.name()));
-        assertEquals(KafkaPrincipal.USER_TYPE, principal.getPrincipalType());
-        assertEquals("foo", principal.getName());
-
-        byte[] serializedPrincipal = builder.serialize(principal);
-        KafkaPrincipal deserializedPrincipal = builder.deserialize(serializedPrincipal);
-        assertEquals(principal, deserializedPrincipal);
-
-        verify(server, atLeastOnce()).getMechanismName();
-        verify(server, atLeastOnce()).getAuthorizationID();
-        verify(kerberosShortNamer, atLeastOnce()).shortName(any());
+        verifyAll();
     }
 
     private static class DummyPrincipal implements Principal {

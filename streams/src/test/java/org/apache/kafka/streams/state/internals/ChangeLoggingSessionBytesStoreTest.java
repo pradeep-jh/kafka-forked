@@ -16,38 +16,51 @@
  */
 package org.apache.kafka.streams.state.internals;
 
-import org.apache.kafka.common.header.internals.RecordHeaders;
+import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.streams.kstream.Windowed;
+import org.apache.kafka.streams.kstream.internals.SessionKeySerde;
 import org.apache.kafka.streams.kstream.internals.SessionWindow;
+import org.apache.kafka.streams.processor.TaskId;
 import org.apache.kafka.streams.processor.internals.ProcessorContextImpl;
-import org.apache.kafka.streams.processor.internals.ProcessorRecordContext;
-import org.apache.kafka.streams.query.Position;
-import org.apache.kafka.streams.state.KeyValueIterator;
 import org.apache.kafka.streams.state.SessionStore;
+import org.apache.kafka.test.NoOpRecordCollector;
+import org.easymock.EasyMock;
+import org.easymock.EasyMockRunner;
+import org.easymock.Mock;
+import org.easymock.MockType;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.mockito.junit.jupiter.MockitoSettings;
-import org.mockito.quality.Strictness;
+import java.util.HashMap;
+import java.util.Map;
 
-import static org.apache.kafka.common.utils.Utils.mkEntry;
-import static org.apache.kafka.common.utils.Utils.mkMap;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
-@ExtendWith(MockitoExtension.class)
-@MockitoSettings(strictness = Strictness.STRICT_STUBS)
+@RunWith(EasyMockRunner.class)
 public class ChangeLoggingSessionBytesStoreTest {
 
-    @Mock
+    private final TaskId taskId = new TaskId(0, 0);
+    private final Map sent = new HashMap<>();
+    private final NoOpRecordCollector collector = new NoOpRecordCollector() {
+        @Override
+        public <K, V> void send(final String topic,
+                                K key,
+                                V value,
+                                Integer partition,
+                                Long timestamp,
+                                Serializer<K> keySerializer,
+                                Serializer<V> valueSerializer) {
+            sent.put(key, value);
+        }
+    };
+
+    @Mock(type = MockType.NICE)
     private SessionStore<Bytes, byte[]> inner;
-    @Mock
+    @Mock(type = MockType.NICE)
     private ProcessorContextImpl context;
 
     private ChangeLoggingSessionBytesStore store;
@@ -55,136 +68,110 @@ public class ChangeLoggingSessionBytesStoreTest {
     private final Bytes bytesKey = Bytes.wrap(value1);
     private final Windowed<Bytes> key1 = new Windowed<>(bytesKey, new SessionWindow(0, 0));
 
-    private static final Position POSITION = Position.fromMap(mkMap(mkEntry("", mkMap(mkEntry(0, 1L)))));
-
-    @BeforeEach
-    public void setUp() {
+    @Before
+    public void setUp() throws Exception {
         store = new ChangeLoggingSessionBytesStore(inner);
+
+    }
+
+    private void init() {
+        EasyMock.expect(context.taskId()).andReturn(taskId);
+        EasyMock.expect(context.recordCollector()).andReturn(collector);
+        inner.init(context, store);
+        EasyMock.expectLastCall();
+        EasyMock.replay(inner, context);
+
         store.init(context, store);
     }
 
-    @AfterEach
-    public void tearDown() {
-        verify(inner).init(context, store);
-    }
-
     @Test
-    public void shouldDelegateInit() {
-        // testing the combination of setUp and tearDown
-    }
+    public void shouldLogPuts() throws Exception {
+        inner.put(key1, value1);
+        EasyMock.expectLastCall();
 
-    @Test
-    public void shouldLogPuts() {
-        final Bytes binaryKey = SessionKeySchema.toBinary(key1);
-        when(inner.getPosition()).thenReturn(Position.emptyPosition());
-        when(context.recordContext()).thenReturn(new ProcessorRecordContext(0, 0, 0, "topic", new RecordHeaders()));
+        init();
 
         store.put(key1, value1);
 
-        verify(inner).put(key1, value1);
-        verify(context).logChange(store.name(), binaryKey, value1, 0L, Position.emptyPosition());
+        assertArrayEquals(value1, (byte[]) sent.get(SessionKeySerde.bytesToBinary(key1)));
+        EasyMock.verify(inner);
     }
 
     @Test
-    public void shouldLogPutsWithPosition() {
-        final Bytes binaryKey = SessionKeySchema.toBinary(key1);
-        when(inner.getPosition()).thenReturn(POSITION);
-        when(context.recordContext()).thenReturn(new ProcessorRecordContext(0, 0, 0, "topic", new RecordHeaders()));
+    public void shouldLogRemoves() throws Exception {
+        inner.remove(key1);
+        EasyMock.expectLastCall();
 
-        store.put(key1, value1);
-
-        verify(inner).put(key1, value1);
-        verify(context).logChange(store.name(), binaryKey, value1, 0L, POSITION);
-    }
-
-    @Test
-    public void shouldLogRemoves() {
-        final Bytes binaryKey = SessionKeySchema.toBinary(key1);
-        when(inner.getPosition()).thenReturn(Position.emptyPosition());
-        when(context.recordContext()).thenReturn(new ProcessorRecordContext(0, 0, 0, "topic", new RecordHeaders()));
-
-        store.remove(key1);
+        init();
         store.remove(key1);
 
-        verify(inner, times(2)).remove(key1);
-        verify(context, times(2)).logChange(store.name(), binaryKey, null, 0L, Position.emptyPosition());
-    }
-
-    @SuppressWarnings({"resource", "unused"})
-    @Test
-    public void shouldDelegateToUnderlyingStoreWhenFetching() {
-        try (final KeyValueIterator<Windowed<Bytes>, byte[]> unused = store.fetch(bytesKey)) {
-            verify(inner).fetch(bytesKey);
-        }
-    }
-
-    @SuppressWarnings({"resource", "unused"})
-    @Test
-    public void shouldDelegateToUnderlyingStoreWhenBackwardFetching() {
-        try (final KeyValueIterator<Windowed<Bytes>, byte[]> unused = store.backwardFetch(bytesKey)) {
-            verify(inner).backwardFetch(bytesKey);
-        }
-    }
-
-    @SuppressWarnings({"resource", "unused"})
-    @Test
-    public void shouldDelegateToUnderlyingStoreWhenFetchingRange() {
-        try (final KeyValueIterator<Windowed<Bytes>, byte[]> unused = store.fetch(bytesKey, bytesKey)) {
-            verify(inner).fetch(bytesKey, bytesKey);
-        }
-    }
-
-    @SuppressWarnings({"resource", "unused"})
-    @Test
-    public void shouldDelegateToUnderlyingStoreWhenBackwardFetchingRange() {
-        try (final KeyValueIterator<Windowed<Bytes>, byte[]> unused = store.backwardFetch(bytesKey, bytesKey)) {
-            verify(inner).backwardFetch(bytesKey, bytesKey);
-        }
-    }
-
-    @SuppressWarnings({"resource", "unused"})
-    @Test
-    public void shouldDelegateToUnderlyingStoreWhenFindingSessions() {
-        try (final KeyValueIterator<Windowed<Bytes>, byte[]> unused = store.findSessions(bytesKey, 0, 1)) {
-            verify(inner).findSessions(bytesKey, 0, 1);
-        }
-    }
-
-    @SuppressWarnings({"resource", "unused"})
-    @Test
-    public void shouldDelegateToUnderlyingStoreWhenBackwardFindingSessions() {
-        try (final KeyValueIterator<Windowed<Bytes>, byte[]> unused = store.backwardFindSessions(bytesKey, 0, 1)) {
-            verify(inner).backwardFindSessions(bytesKey, 0, 1);
-        }
-    }
-
-    @SuppressWarnings({"resource", "unused"})
-    @Test
-    public void shouldDelegateToUnderlyingStoreWhenFindingSessionRange() {
-        try (final KeyValueIterator<Windowed<Bytes>, byte[]> unused = store.findSessions(bytesKey, bytesKey, 0, 1)) {
-            verify(inner).findSessions(bytesKey, bytesKey, 0, 1);
-        }
-    }
-
-    @SuppressWarnings({"resource", "unused"})
-    @Test
-    public void shouldDelegateToUnderlyingStoreWhenBackwardFindingSessionRange() {
-        try (final KeyValueIterator<Windowed<Bytes>, byte[]> unused = store.backwardFindSessions(bytesKey, bytesKey, 0, 1)) {
-            verify(inner).backwardFindSessions(bytesKey, bytesKey, 0, 1);
-        }
+        final Bytes binaryKey = SessionKeySerde.bytesToBinary(key1);
+        assertTrue(sent.containsKey(binaryKey));
+        assertNull(sent.get(binaryKey));
+        EasyMock.verify(inner);
     }
 
     @Test
-    public void shouldFlushUnderlyingStore() {
+    public void shouldDelegateToUnderlyingStoreWhenFetching() throws Exception {
+        EasyMock.expect(inner.findSessions(bytesKey, 0, Long.MAX_VALUE)).andReturn(KeyValueIterators.<Windowed<Bytes>, byte[]>emptyIterator());
+
+        init();
+
+        store.fetch(bytesKey);
+        EasyMock.verify(inner);
+    }
+
+    @Test
+    public void shouldDelegateToUnderlyingStoreWhenFetchingRange() throws Exception {
+        EasyMock.expect(inner.findSessions(bytesKey, bytesKey, 0, Long.MAX_VALUE)).andReturn(KeyValueIterators.<Windowed<Bytes>, byte[]>emptyIterator());
+
+        init();
+
+        store.fetch(bytesKey, bytesKey);
+        EasyMock.verify(inner);
+    }
+
+    @Test
+    public void shouldDelegateToUnderlyingStoreWhenFindingSessions() throws Exception {
+        EasyMock.expect(inner.findSessions(bytesKey, 0, 1)).andReturn(KeyValueIterators.<Windowed<Bytes>, byte[]>emptyIterator());
+
+        init();
+
+        store.findSessions(bytesKey, 0, 1);
+        EasyMock.verify(inner);
+    }
+
+    @Test
+    public void shouldDelegateToUnderlyingStoreWhenFindingSessionRange() throws Exception {
+        EasyMock.expect(inner.findSessions(bytesKey, bytesKey, 0, 1)).andReturn(KeyValueIterators.<Windowed<Bytes>, byte[]>emptyIterator());
+
+        init();
+
+        store.findSessions(bytesKey, bytesKey, 0, 1);
+        EasyMock.verify(inner);
+    }
+
+    @Test
+    public void shouldFlushUnderlyingStore() throws Exception {
+        inner.flush();
+        EasyMock.expectLastCall();
+
+        init();
+
         store.flush();
-
-        verify(inner).flush();
+        EasyMock.verify(inner);
     }
 
     @Test
-    public void shouldCloseUnderlyingStore() {
-        store.close();
+    public void shouldCloseUnderlyingStore() throws Exception {
+        inner.close();
+        EasyMock.expectLastCall();
 
-        verify(inner).close();
+        init();
+
+        store.close();
+        EasyMock.verify(inner);
     }
+
+
 }

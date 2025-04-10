@@ -16,259 +16,325 @@
  */
 package org.apache.kafka.connect.runtime.isolation;
 
-import org.apache.maven.artifact.versioning.DefaultArtifactVersion;
-import org.apache.maven.artifact.versioning.VersionRange;
+import org.apache.kafka.connect.connector.Connector;
+import org.apache.kafka.connect.storage.Converter;
+import org.apache.kafka.connect.transforms.Transformation;
+import org.reflections.Reflections;
+import org.reflections.util.ClasspathHelper;
+import org.reflections.util.ConfigurationBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLClassLoader;
-import java.util.Collections;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.security.AccessController;
+import java.security.PrivilegedAction;
+import java.sql.Driver;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.SortedMap;
+import java.util.SortedSet;
 import java.util.TreeMap;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.stream.Collectors;
+import java.util.TreeSet;
 
-/**
- * A custom classloader dedicated to loading Connect plugin classes in classloading isolation.
- *
- * <p>
- * Under the current scheme for classloading isolation in Connect, the delegating classloader loads
- * plugin classes that it finds in its child plugin classloaders. For classes that are not plugins,
- * this delegating classloader delegates its loading to its parent. This makes this classloader a
- * child-first classloader.
- * <p>
- * This class is thread-safe and parallel capable.
- */
 public class DelegatingClassLoader extends URLClassLoader {
     private static final Logger log = LoggerFactory.getLogger(DelegatingClassLoader.class);
 
-    private final ConcurrentMap<String, SortedMap<PluginDesc<?>, ClassLoader>> pluginLoaders;
-    private final ConcurrentMap<String, String> aliases;
+    private final Map<String, SortedMap<PluginDesc<?>, ClassLoader>> pluginLoaders;
+    private final Map<String, String> aliases;
+    private final SortedSet<PluginDesc<Connector>> connectors;
+    private final SortedSet<PluginDesc<Converter>> converters;
+    private final SortedSet<PluginDesc<Transformation>> transformations;
+    private final List<String> pluginPaths;
+    private final Map<Path, PluginClassLoader> activePaths;
 
-    // Although this classloader does not load classes directly but rather delegates loading to a
-    // PluginClassLoader or its parent through its base class, because of the use of inheritance
-    // in the latter case, this classloader needs to also be declared as parallel capable to use
-    // fine-grain locking when loading classes.
-    static {
-        ClassLoader.registerAsParallelCapable();
-    }
-
-    public DelegatingClassLoader(ClassLoader parent) {
+    public DelegatingClassLoader(List<String> pluginPaths, ClassLoader parent) {
         super(new URL[0], parent);
-        this.pluginLoaders = new ConcurrentHashMap<>();
-        this.aliases = new ConcurrentHashMap<>();
+        this.pluginPaths = pluginPaths;
+        this.pluginLoaders = new HashMap<>();
+        this.aliases = new HashMap<>();
+        this.activePaths = new HashMap<>();
+        this.connectors = new TreeSet<>();
+        this.converters = new TreeSet<>();
+        this.transformations = new TreeSet<>();
     }
 
-    public DelegatingClassLoader() {
-        // Use as parent the classloader that loaded this class. In most cases this will be the
-        // System classloader. But this choice here provides additional flexibility in managed
-        // environments that control classloading differently (OSGi, Spring and others) and don't
-        // depend on the System classloader to load Connect's classes.
-        this(DelegatingClassLoader.class.getClassLoader());
+    public DelegatingClassLoader(List<String> pluginPaths) {
+        this(pluginPaths, ClassLoader.getSystemClassLoader());
     }
 
-    /**
-     * Retrieve the PluginClassLoader associated with a plugin class
-     *
-     * @param name The fully qualified class name of the plugin
-     * @return the PluginClassLoader that should be used to load this, or null if the plugin is not isolated.
-     */
-    // VisibleForTesting
-    PluginClassLoader pluginClassLoader(String name, VersionRange range) {
-        if (!PluginUtils.shouldLoadInIsolation(name)) {
-            return null;
-        }
-
-        SortedMap<PluginDesc<?>, ClassLoader> inner = pluginLoaders.get(name);
-        if (inner == null) {
-            return null;
-        }
-
-
-        ClassLoader pluginLoader = findPluginLoader(inner, name, range);
-        return pluginLoader instanceof PluginClassLoader
-            ? (PluginClassLoader) pluginLoader
-            : null;
+    public Set<PluginDesc<Connector>> connectors() {
+        return connectors;
     }
 
-    PluginClassLoader pluginClassLoader(String name) {
-        return pluginClassLoader(name, null);
+    public Set<PluginDesc<Converter>> converters() {
+        return converters;
     }
 
-    ClassLoader loader(String classOrAlias, VersionRange range) {
-        String fullName = aliases.getOrDefault(classOrAlias, classOrAlias);
-        ClassLoader classLoader = pluginClassLoader(fullName, range);
-        if (classLoader == null) {
-            classLoader = this;
-        }
-        log.debug(
-                "Got plugin class loader: '{}' for connector: {}",
-                classLoader,
-                classOrAlias
-        );
-        return classLoader;
+    public Set<PluginDesc<Transformation>> transformations() {
+        return transformations;
     }
 
-    ClassLoader loader(String classOrAlias) {
-        return loader(classOrAlias, null);
+    public ClassLoader connectorLoader(Connector connector) {
+        return connectorLoader(connector.getClass().getName());
     }
 
-    ClassLoader connectorLoader(String connectorClassOrAlias) {
-        return loader(connectorClassOrAlias);
-    }
-
-    String resolveFullClassName(String classOrAlias) {
-        return aliases.getOrDefault(classOrAlias, classOrAlias);
-    }
-
-    PluginDesc<?> pluginDesc(String classOrAlias, String preferredLocation, Set<PluginType> allowedTypes) {
-        if (classOrAlias == null) {
-            return null;
-        }
-        String fullName = aliases.getOrDefault(classOrAlias, classOrAlias);
+    public ClassLoader connectorLoader(String connectorClassOrAlias) {
+        log.debug("Getting plugin class loader for connector: '{}'", connectorClassOrAlias);
+        String fullName = aliases.containsKey(connectorClassOrAlias)
+                          ? aliases.get(connectorClassOrAlias)
+                          : connectorClassOrAlias;
         SortedMap<PluginDesc<?>, ClassLoader> inner = pluginLoaders.get(fullName);
         if (inner == null) {
-            return null;
+            log.error(
+                    "Plugin class loader for connector: '{}' was not found. Returning: {}",
+                    connectorClassOrAlias,
+                    this
+            );
+            return this;
         }
-        PluginDesc<?> result = null;
-        for (Map.Entry<PluginDesc<?>, ClassLoader> entry : inner.entrySet()) {
-            if (!allowedTypes.contains(entry.getKey().type())) {
-                continue;
+        return inner.get(inner.lastKey());
+    }
+
+    private static PluginClassLoader newPluginClassLoader(
+            final URL pluginLocation,
+            final URL[] urls,
+            final ClassLoader parent
+    ) {
+        return (PluginClassLoader) AccessController.doPrivileged(
+                new PrivilegedAction() {
+                    @Override
+                    public Object run() {
+                        return new PluginClassLoader(pluginLocation, urls, parent);
+                    }
+                }
+        );
+    }
+
+    private <T> void addPlugins(Collection<PluginDesc<T>> plugins, ClassLoader loader) {
+        for (PluginDesc<T> plugin : plugins) {
+            String pluginClassName = plugin.className();
+            SortedMap<PluginDesc<?>, ClassLoader> inner = pluginLoaders.get(pluginClassName);
+            if (inner == null) {
+                inner = new TreeMap<>();
+                pluginLoaders.put(pluginClassName, inner);
+                // TODO: once versioning is enabled this line should be moved outside this if branch
+                log.info("Added plugin '{}'", pluginClassName);
             }
-            result = entry.getKey();
-            if (result.location().equals(preferredLocation)) {
-                return result;
+            inner.put(plugin, loader);
+        }
+    }
+
+    protected void initLoaders() {
+        String path = null;
+        try {
+            for (String configPath : pluginPaths) {
+                path = configPath;
+                Path pluginPath = Paths.get(path).toAbsolutePath();
+                // Update for exception handling
+                path = pluginPath.toString();
+                // Currently 'plugin.paths' property is a list of top-level directories
+                // containing plugins
+                if (Files.isDirectory(pluginPath)) {
+                    for (Path pluginLocation : PluginUtils.pluginLocations(pluginPath)) {
+                        registerPlugin(pluginLocation);
+                    }
+                } else if (PluginUtils.isArchive(pluginPath)) {
+                    registerPlugin(pluginPath);
+                }
+            }
+
+            path = "classpath";
+            // Finally add parent/system loader.
+            scanUrlsAndAddPlugins(
+                    getParent(),
+                    ClasspathHelper.forJavaClassPath().toArray(new URL[0]),
+                    null
+            );
+        } catch (InvalidPathException | MalformedURLException e) {
+            log.error("Invalid path in plugin path: {}. Ignoring.", path, e);
+        } catch (IOException e) {
+            log.error("Could not get listing for plugin path: {}. Ignoring.", path, e);
+        } catch (InstantiationException | IllegalAccessException e) {
+            log.error("Could not instantiate plugins in: {}. Ignoring: {}", path, e);
+        }
+        addAllAliases();
+    }
+
+    private void registerPlugin(Path pluginLocation)
+            throws InstantiationException, IllegalAccessException, IOException {
+        log.info("Loading plugin from: {}", pluginLocation);
+        List<URL> pluginUrls = new ArrayList<>();
+        for (Path path : PluginUtils.pluginUrls(pluginLocation)) {
+            pluginUrls.add(path.toUri().toURL());
+        }
+        URL[] urls = pluginUrls.toArray(new URL[0]);
+        if (log.isDebugEnabled()) {
+            log.debug("Loading plugin urls: {}", Arrays.toString(urls));
+        }
+        PluginClassLoader loader = newPluginClassLoader(
+                pluginLocation.toUri().toURL(),
+                urls,
+                this
+        );
+        scanUrlsAndAddPlugins(loader, urls, pluginLocation);
+    }
+
+    private void scanUrlsAndAddPlugins(
+            ClassLoader loader,
+            URL[] urls,
+            Path pluginLocation
+    ) throws InstantiationException, IllegalAccessException {
+        PluginScanResult plugins = scanPluginPath(loader, urls);
+        log.info("Registered loader: {}", loader);
+        if (!plugins.isEmpty()) {
+            if (loader instanceof PluginClassLoader) {
+                activePaths.put(pluginLocation, (PluginClassLoader) loader);
+            }
+
+            addPlugins(plugins.connectors(), loader);
+            connectors.addAll(plugins.connectors());
+            addPlugins(plugins.converters(), loader);
+            converters.addAll(plugins.converters());
+            addPlugins(plugins.transformations(), loader);
+            transformations.addAll(plugins.transformations());
+        }
+
+        loadJdbcDrivers(loader);
+    }
+
+    private void loadJdbcDrivers(final ClassLoader loader) {
+        // Apply here what java.sql.DriverManager does to discover and register classes
+        // implementing the java.sql.Driver interface.
+        AccessController.doPrivileged(
+                new PrivilegedAction<Void>() {
+                    public Void run() {
+                        ServiceLoader<Driver> loadedDrivers = ServiceLoader.load(
+                                Driver.class,
+                                loader
+                        );
+                        Iterator<Driver> driversIterator = loadedDrivers.iterator();
+                        try {
+                            while (driversIterator.hasNext()) {
+                                Driver driver = driversIterator.next();
+                                log.debug(
+                                        "Registered java.sql.Driver: {} to java.sql.DriverManager",
+                                        driver
+                                );
+                            }
+                        } catch (Throwable t) {
+                            log.debug(
+                                    "Ignoring java.sql.Driver classes listed in resources but not"
+                                            + " present in class loader's classpath: ",
+                                    t
+                            );
+                        }
+                        return null;
+                    }
+                }
+        );
+    }
+
+    private PluginScanResult scanPluginPath(
+            ClassLoader loader,
+            URL[] urls
+    ) throws InstantiationException, IllegalAccessException {
+        ConfigurationBuilder builder = new ConfigurationBuilder();
+        builder.setClassLoaders(new ClassLoader[]{loader});
+        builder.addUrls(urls);
+        Reflections reflections = new Reflections(builder);
+
+        return new PluginScanResult(
+                getPluginDesc(reflections, Connector.class, loader),
+                getPluginDesc(reflections, Converter.class, loader),
+                getPluginDesc(reflections, Transformation.class, loader)
+        );
+    }
+
+    private <T> Collection<PluginDesc<T>> getPluginDesc(
+            Reflections reflections,
+            Class<T> klass,
+            ClassLoader loader
+    ) throws InstantiationException, IllegalAccessException {
+        Set<Class<? extends T>> plugins = reflections.getSubTypesOf(klass);
+
+        Collection<PluginDesc<T>> result = new ArrayList<>();
+        for (Class<? extends T> plugin : plugins) {
+            if (PluginUtils.isConcrete(plugin)) {
+                // Temporary workaround until all the plugins are versioned.
+                if (Connector.class.isAssignableFrom(plugin)) {
+                    result.add(
+                            new PluginDesc<>(
+                                    plugin,
+                                    ((Connector) plugin.newInstance()).version(),
+                                    loader
+                            )
+                    );
+                } else {
+                    result.add(new PluginDesc<>(plugin, "undefined", loader));
+                }
             }
         }
         return result;
     }
 
-    private ClassLoader findPluginLoader(
-        SortedMap<PluginDesc<?>, ClassLoader> loaders,
-        String pluginName,
-        VersionRange range
-    ) {
-
-        if (range != null) {
-
-            if (null != range.getRecommendedVersion()) {
-                throw new VersionedPluginLoadingException(String.format("A soft version range is not supported for plugin loading, "
-                        + "this is an internal error as connect should automatically convert soft ranges to hard ranges. "
-                        + "Provided soft version: %s ", range));
-            }
-
-            ClassLoader loader = null;
-            for (Map.Entry<PluginDesc<?>, ClassLoader> entry : loaders.entrySet()) {
-                // the entries should be in sorted order of versions so this should end up picking the latest version which matches the range
-                if (range.containsVersion(entry.getKey().encodedVersion())) {
-                    loader = entry.getValue();
-                }
-            }
-
-            if (loader == null) {
-                List<String> availableVersions = loaders.keySet().stream().map(PluginDesc::version).collect(Collectors.toList());
-                throw new VersionedPluginLoadingException(String.format(
-                        "Plugin %s not found that matches the version range %s, available versions: %s",
-                        pluginName,
-                        range,
-                        availableVersions
-                ), availableVersions);
-            }
-            return loader;
-        }
-
-        return loaders.get(loaders.lastKey());
-    }
-
-    public void installDiscoveredPlugins(PluginScanResult scanResult) {
-        pluginLoaders.putAll(computePluginLoaders(scanResult));
-        for (String pluginClassName : pluginLoaders.keySet()) {
-            log.info("Added plugin '{}'", pluginClassName);
-        }
-        aliases.putAll(PluginUtils.computeAliases(scanResult));
-        for (Map.Entry<String, String> alias : aliases.entrySet()) {
-            log.info("Added alias '{}' to plugin '{}'", alias.getKey(), alias.getValue());
-        }
-    }
-
     @Override
     protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-        return loadVersionedPluginClass(name, null, resolve);
-    }
-
-    protected Class<?> loadVersionedPluginClass(
-        String name,
-        VersionRange range,
-        boolean resolve
-    ) throws VersionedPluginLoadingException, ClassNotFoundException {
-
-        String fullName = aliases.getOrDefault(name, name);
-        PluginClassLoader pluginLoader = pluginClassLoader(fullName, range);
-        Class<?> plugin;
-        if (pluginLoader != null) {
-            log.trace("Retrieving loaded class '{}' from '{}'", name, pluginLoader);
-            plugin = pluginLoader.loadClass(fullName, resolve);
-        } else {
-            plugin = super.loadClass(fullName, resolve);
-            if (range == null) {
-                return plugin;
-            }
-            verifyClasspathVersionedPlugin(fullName, plugin, range);
-        }
-        return plugin;
-    }
-
-    private void verifyClasspathVersionedPlugin(String fullName, Class<?> plugin, VersionRange range) throws VersionedPluginLoadingException {
-        String pluginVersion;
-        SortedMap<PluginDesc<?>, ClassLoader> scannedPlugin = pluginLoaders.get(fullName);
-
-        if (scannedPlugin == null) {
-            throw new VersionedPluginLoadingException(String.format(
-                    "Plugin %s is not part of Connect's plugin loading mechanism (ClassPath or Plugin Path)",
-                    fullName
-            ));
+        if (!PluginUtils.shouldLoadInIsolation(name)) {
+            // There are no paths in this classloader, will attempt to load with the parent.
+            return super.loadClass(name, resolve);
         }
 
-        // if a plugin implements two interfaces (like JsonConverter implements both converter and header converter)
-        // it will have two entries under classpath, one for each scan. Hence, we count distinct by version.
-        List<String> classpathPlugins = scannedPlugin.keySet().stream()
-                .filter(pluginDesc -> pluginDesc.location().equals("classpath"))
-                .map(PluginDesc::version)
-                .distinct()
-                .collect(Collectors.toList());
+        String fullName = aliases.containsKey(name) ? aliases.get(name) : name;
+        SortedMap<PluginDesc<?>, ClassLoader> inner = pluginLoaders.get(fullName);
+        if (inner != null) {
+            ClassLoader pluginLoader = inner.get(inner.lastKey());
+            log.trace("Retrieving loaded class '{}' from '{}'", fullName, pluginLoader);
+            return pluginLoader instanceof PluginClassLoader
+                   ? ((PluginClassLoader) pluginLoader).loadClass(fullName, resolve)
+                   : super.loadClass(fullName, resolve);
+        }
 
-        if (classpathPlugins.size() > 1) {
-            throw new VersionedPluginLoadingException(String.format(
-                    "Plugin %s has multiple versions specified in class path, "
-                            + "only one version is allowed in class path for loading a plugin with version range",
-                    fullName
-            ));
-        } else if (classpathPlugins.isEmpty()) {
-            throw new VersionedPluginLoadingException("Invalid plugin found in classpath");
-        } else {
-            pluginVersion = classpathPlugins.get(0);
-            if (!range.containsVersion(new DefaultArtifactVersion(pluginVersion))) {
-                throw new VersionedPluginLoadingException(String.format(
-                        "Plugin %s has version %s which does not match the required version range %s",
-                        fullName,
-                        pluginVersion,
-                        range
-                ), Collections.singletonList(pluginVersion));
+        return super.loadClass(fullName, resolve);
+    }
+
+    private void addAllAliases() {
+        addAliases(connectors);
+        addAliases(converters);
+        addAliases(transformations);
+    }
+
+    private <S> void addAliases(Collection<PluginDesc<S>> plugins) {
+        for (PluginDesc<S> plugin : plugins) {
+            if (PluginUtils.isAliasUnique(plugin, plugins)) {
+                String simple = PluginUtils.simpleName(plugin);
+                String pruned = PluginUtils.prunedName(plugin);
+                aliases.put(simple, plugin.className());
+                if (simple.equals(pruned)) {
+                    log.info("Added alias '{}' to plugin '{}'", simple, plugin.className());
+                } else {
+                    aliases.put(pruned, plugin.className());
+                    log.info(
+                            "Added aliases '{}' and '{}' to plugin '{}'",
+                            simple,
+                            pruned,
+                            plugin.className()
+                    );
+                }
             }
         }
-    }
-
-    private static Map<String, SortedMap<PluginDesc<?>, ClassLoader>> computePluginLoaders(PluginScanResult plugins) {
-        Map<String, SortedMap<PluginDesc<?>, ClassLoader>> pluginLoaders = new HashMap<>();
-        plugins.forEach(pluginDesc ->
-            pluginLoaders.computeIfAbsent(pluginDesc.className(), k -> new TreeMap<>())
-                .put(pluginDesc, pluginDesc.loader()));
-        return pluginLoaders;
     }
 }

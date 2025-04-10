@@ -17,17 +17,14 @@
 package org.apache.kafka.streams.processor;
 
 import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.apache.kafka.common.record.TimestampType;
-
-import java.util.Optional;
 
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 
 class TimestampExtractorTest {
 
-    void testExtractMetadataTimestamp(final TimestampExtractor extractor) {
+    void testExtractMetadataTimestamp(TimestampExtractor extractor) {
         final long metadataTimestamp = 42;
 
         final long timestamp = extractor.extract(
@@ -39,10 +36,9 @@ class TimestampExtractorTest {
                 TimestampType.NO_TIMESTAMP_TYPE,
                 0,
                 0,
+                0,
                 null,
-                null,
-                new RecordHeaders(),
-                Optional.empty()),
+                null),
             0
         );
 

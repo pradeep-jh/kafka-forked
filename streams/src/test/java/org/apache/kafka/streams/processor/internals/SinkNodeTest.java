@@ -16,59 +16,50 @@
  */
 package org.apache.kafka.streams.processor.internals;
 
-import org.apache.kafka.common.config.ConfigException;
+import org.apache.kafka.clients.producer.MockProducer;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.common.utils.Bytes;
+import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.streams.errors.StreamsException;
-import org.apache.kafka.streams.kstream.internals.WrappingNullableUtils;
-import org.apache.kafka.streams.processor.api.Record;
 import org.apache.kafka.streams.state.StateSerdes;
-import org.apache.kafka.test.InternalMockProcessorContext;
-import org.apache.kafka.test.MockRecordCollector;
+import org.apache.kafka.test.MockProcessorContext;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.mockito.MockedStatic;
-import org.mockito.Mockito;
-
+import static org.hamcrest.CoreMatchers.containsString;
+import static org.hamcrest.CoreMatchers.instanceOf;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.equalTo;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.fail;
-import static org.mockito.ArgumentMatchers.any;
+import static org.junit.Assert.fail;
 
 public class SinkNodeTest {
-    private final StateSerdes<Bytes, Bytes> anyStateSerde = StateSerdes.withBuiltinTypes("anyName", Bytes.class, Bytes.class);
-    private final Serializer<byte[]> anySerializer = Serdes.ByteArray().serializer();
-    private final RecordCollector recordCollector = new MockRecordCollector();
-    private final InternalMockProcessorContext<Void, Void> context = new InternalMockProcessorContext<>(anyStateSerde, recordCollector);
-    private final SinkNode<byte[], byte[]> sink = new SinkNode<>("anyNodeName",
-            new StaticTopicNameExtractor<>("any-output-topic"), anySerializer, anySerializer, null);
+    private final Serializer anySerializer = Serdes.Bytes().serializer();
+    private final StateSerdes anyStateSerde = StateSerdes.withBuiltinTypes("anyName", Bytes.class, Bytes.class);
+    private final MockProcessorContext context = new MockProcessorContext(anyStateSerde,
+        new RecordCollectorImpl(new MockProducer<byte[], byte[]>(true, anySerializer, anySerializer), null, new LogContext("sinknode-test ")));
+    private final SinkNode sink = new SinkNode<>("anyNodeName", "any-output-topic", anySerializer, anySerializer, null);
 
-    // Used to verify that the correct exceptions are thrown if the compiler checks are bypassed
-    @SuppressWarnings("unchecked")
-    private final SinkNode<Object, Object> illTypedSink = (SinkNode<Object, Object>) ((SinkNode<?, ?>) sink);
-    private MockedStatic<WrappingNullableUtils> utilsMock;
-
-    @BeforeEach
-    public void setup() {
-        utilsMock = Mockito.mockStatic(WrappingNullableUtils.class);
+    @Before
+    public void before() {
+        sink.init(context);
     }
 
-    @AfterEach
-    public void cleanup() {
-        utilsMock.close();
+    @After
+    public void after() {
+        context.close();
     }
 
     @Test
+    @SuppressWarnings("unchecked")
     public void shouldThrowStreamsExceptionOnInputRecordWithInvalidTimestamp() {
-        sink.init(context);
+        final Bytes anyKey = new Bytes("any key".getBytes());
+        final Bytes anyValue = new Bytes("any value".getBytes());
+
         // When/Then
         context.setTime(-1); // ensures a negative timestamp is set for the record we send next
         try {
-            illTypedSink.process(new Record<>("any key".getBytes(), "any value".getBytes(), -1));
+            sink.process(anyKey, anyValue);
             fail("Should have thrown StreamsException");
         } catch (final StreamsException ignored) {
             // expected
@@ -76,45 +67,51 @@ public class SinkNodeTest {
     }
 
     @Test
-    public void shouldThrowStreamsExceptionOnUndefinedKeySerde() {
-        utilsMock.when(() -> WrappingNullableUtils.prepareKeySerializer(any(), any()))
-            .thenThrow(new ConfigException("Please set StreamsConfig#DEFAULT_KEY_SERDE_CLASS_CONFIG"));
+    @SuppressWarnings("unchecked")
+    public void shouldThrowStreamsExceptionOnKeyValueTypeSerializerMismatch() {
+        final String keyOfDifferentTypeThanSerializer = "key with different type";
+        final String valueOfDifferentTypeThanSerializer = "value with different type";
 
-        final Throwable exception = assertThrows(StreamsException.class, () -> sink.init(context));
-
-        assertThat(
-            exception.getMessage(),
-            equalTo("Failed to initialize key serdes for sink node anyNodeName")
-        );
-        assertThat(
-            exception.getCause().getMessage(),
-            equalTo("Please set StreamsConfig#DEFAULT_KEY_SERDE_CLASS_CONFIG")
-        );
+        // When/Then
+        context.setTime(0);
+        try {
+            sink.process(keyOfDifferentTypeThanSerializer, valueOfDifferentTypeThanSerializer);
+            fail("Should have thrown StreamsException");
+        } catch (final StreamsException e) {
+            assertThat(e.getCause(), instanceOf(ClassCastException.class));
+        }
     }
 
     @Test
-    public void shouldThrowStreamsExceptionOnUndefinedValueSerde() {
-        utilsMock.when(() -> WrappingNullableUtils.prepareValueSerializer(any(), any()))
-            .thenThrow(new ConfigException("Please set StreamsConfig#DEFAULT_VALUE_SERDE_CLASS_CONFIG"));
+    @SuppressWarnings("unchecked")
+    public void shouldHandleNullKeysWhenThrowingStreamsExceptionOnKeyValueTypeSerializerMismatch() {
+        final String invalidValueToTriggerSerializerMismatch = "";
 
-        final Throwable exception = assertThrows(StreamsException.class, () -> sink.init(context));
-
-        assertThat(
-            exception.getMessage(),
-            equalTo("Failed to initialize value serdes for sink node anyNodeName")
-        );
-        assertThat(
-            exception.getCause().getMessage(),
-            equalTo("Please set StreamsConfig#DEFAULT_VALUE_SERDE_CLASS_CONFIG")
-        );
+        // When/Then
+        context.setTime(1);
+        try {
+            sink.process(null, invalidValueToTriggerSerializerMismatch);
+            fail("Should have thrown StreamsException");
+        } catch (final StreamsException e) {
+            assertThat(e.getCause(), instanceOf(ClassCastException.class));
+            assertThat(e.getMessage(), containsString("unknown because key is null"));
+        }
     }
 
     @Test
-    public void shouldThrowStreamsExceptionWithExplicitErrorMessage() {
-        utilsMock.when(() -> WrappingNullableUtils.prepareKeySerializer(any(), any())).thenThrow(new StreamsException(""));
+    @SuppressWarnings("unchecked")
+    public void shouldHandleNullValuesWhenThrowingStreamsExceptionOnKeyValueTypeSerializerMismatch() {
+        final String invalidKeyToTriggerSerializerMismatch = "";
 
-        final Throwable exception = assertThrows(StreamsException.class, () -> sink.init(context));
-
-        assertThat(exception.getMessage(), equalTo("Failed to initialize key serdes for sink node anyNodeName"));
+        // When/Then
+        context.setTime(1);
+        try {
+            sink.process(invalidKeyToTriggerSerializerMismatch, null);
+            fail("Should have thrown StreamsException");
+        } catch (final StreamsException e) {
+            assertThat(e.getCause(), instanceOf(ClassCastException.class));
+            assertThat(e.getMessage(), containsString("unknown because value is null"));
+        }
     }
+
 }

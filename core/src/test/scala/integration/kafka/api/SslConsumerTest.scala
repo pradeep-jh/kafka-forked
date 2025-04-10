@@ -12,12 +12,11 @@
   */
 package kafka.api
 
-import kafka.utils.TestUtils
-import org.apache.kafka.common.security.auth.SecurityProtocol
-import org.junit.jupiter.api.Timeout
+import java.io.File
 
-@Timeout(600)
+import org.apache.kafka.common.security.auth.SecurityProtocol
+
 class SslConsumerTest extends BaseConsumerTest {
   override protected def securityProtocol = SecurityProtocol.SSL
-  override protected lazy val trustStoreFile = Some(TestUtils.tempFile("truststore", ".jks"))
+  override protected lazy val trustStoreFile = Some(File.createTempFile("truststore", ".jks"))
 }

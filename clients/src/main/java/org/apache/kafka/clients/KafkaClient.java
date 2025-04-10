@@ -48,7 +48,7 @@ public interface KafkaClient extends Closeable {
     boolean ready(Node node, long now);
 
     /**
-     * Return the number of milliseconds to wait, based on the connection state, before attempting to send data. When
+     * Returns the number of milliseconds to wait, based on the connection state, before attempting to send data. When
      * disconnected, this respects the reconnect backoff time. When connecting or connected, this handles slow/stalled
      * connections.
      *
@@ -59,18 +59,8 @@ public interface KafkaClient extends Closeable {
     long connectionDelay(Node node, long now);
 
     /**
-     * Return the number of milliseconds to wait, based on the connection state and the throttle time, before
-     * attempting to send data. If the connection has been established but being throttled, return throttle delay.
-     * Otherwise, return connection delay.
-     *
-     * @param node the connection to check
-     * @param now the current time in ms
-     */
-    long pollDelayMs(Node node, long now);
-
-    /**
      * Check if the connection of the node has failed, based on the connection state. Such connection failure are
-     * usually transient and can be resumed in the next {@link #ready(org.apache.kafka.common.Node, long)}
+     * usually transient and can be resumed in the next {@link #ready(org.apache.kafka.common.Node, long)} }
      * call, but there are cases where transient failures needs to be caught and re-acted upon.
      *
      * @param node the node to check
@@ -130,7 +120,7 @@ public interface KafkaClient extends Closeable {
      * @param now The current time in ms
      * @return The node with the fewest in-flight requests.
      */
-    LeastLoadedNode leastLoadedNode(long now);
+    Node leastLoadedNode(long now);
 
     /**
      * The number of currently in-flight requests for which we have not yet returned a response
@@ -155,12 +145,9 @@ public interface KafkaClient extends Closeable {
     boolean hasInFlightRequests(String nodeId);
 
     /**
-     * Return true if there is at least one node with connection in the READY state and not throttled. Returns false
-     * otherwise.
-     *
-     * @param now the current time
+     * Return true if there is at least one node with connection in ready state and false otherwise.
      */
-    boolean hasReadyNodes(long now);
+    boolean hasReadyNodes();
 
     /**
      * Wake up the client if it is currently blocked waiting for I/O
@@ -185,32 +172,9 @@ public interface KafkaClient extends Closeable {
      * @param requestBuilder the request builder to use
      * @param createdTimeMs the time in milliseconds to use as the creation time of the request
      * @param expectResponse true iff we expect a response
-     * @param requestTimeoutMs Upper bound time in milliseconds to await a response before disconnecting the socket and
-     *                         cancelling the request. The request may get cancelled sooner if the socket disconnects
-     *                         for any reason including if another pending request to the same node timed out first.
      * @param callback the callback to invoke when we get a response
      */
-    ClientRequest newClientRequest(String nodeId,
-                                   AbstractRequest.Builder<?> requestBuilder,
-                                   long createdTimeMs,
-                                   boolean expectResponse,
-                                   int requestTimeoutMs,
-                                   RequestCompletionHandler callback);
-
-
-
-    /**
-     * Initiates shutdown of this client. This method may be invoked from another thread while this
-     * client is being polled. No further requests may be sent using the client. The current poll()
-     * will be terminated using wakeup(). The client should be explicitly shutdown using {@link #close()}
-     * after poll returns. Note that {@link #close()} should not be invoked concurrently while polling.
-     */
-    void initiateClose();
-
-    /**
-     * Returns true if the client is still active. Returns false if {@link #initiateClose()} or {@link #close()}
-     * was invoked for this client.
-     */
-    boolean active();
+    ClientRequest newClientRequest(String nodeId, AbstractRequest.Builder<?> requestBuilder, long createdTimeMs,
+                                   boolean expectResponse, RequestCompletionHandler callback);
 
 }

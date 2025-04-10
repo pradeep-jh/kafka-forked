@@ -16,17 +16,15 @@
  */
 package org.apache.kafka.clients.producer;
 
-import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.Configurable;
+import org.apache.kafka.common.Cluster;
 
 import java.io.Closeable;
 
 /**
  * Partitioner Interface
- * <br/>
- * Implement {@link org.apache.kafka.common.metrics.Monitorable} to enable the partitioner to register metrics. The following tags are automatically added to
- * all metrics registered: <code>config</code> set to <code>partitioner.class</code>, and <code>class</code> set to the Partitioner class name.
  */
+
 public interface Partitioner extends Configurable, Closeable {
 
     /**
@@ -39,10 +37,11 @@ public interface Partitioner extends Configurable, Closeable {
      * @param valueBytes The serialized value to partition on or null
      * @param cluster The current cluster metadata
      */
-    int partition(String topic, Object key, byte[] keyBytes, Object value, byte[] valueBytes, Cluster cluster);
+    public int partition(String topic, Object key, byte[] keyBytes, Object value, byte[] valueBytes, Cluster cluster);
 
     /**
      * This is called when partitioner is closed.
      */
-    void close();
+    public void close();
+
 }

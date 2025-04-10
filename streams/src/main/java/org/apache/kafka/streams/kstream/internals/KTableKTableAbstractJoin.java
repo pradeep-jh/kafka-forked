@@ -17,25 +17,20 @@
 package org.apache.kafka.streams.kstream.internals;
 
 import org.apache.kafka.streams.kstream.ValueJoiner;
-import org.apache.kafka.streams.state.StoreBuilder;
 
-import java.util.Set;
+abstract class KTableKTableAbstractJoin<K, R, V1, V2> implements KTableProcessorSupplier<K, V1, R> {
 
-public abstract class KTableKTableAbstractJoin<K, V1, V2, VOut> implements
-    KTableProcessorSupplier<K, V1, K, VOut> {
+    protected final KTableImpl<K, ?, V1> table1;
+    protected final KTableImpl<K, ?, V2> table2;
+    protected final KTableValueGetterSupplier<K, V1> valueGetterSupplier1;
+    protected final KTableValueGetterSupplier<K, V2> valueGetterSupplier2;
+    protected final ValueJoiner<? super V1, ? super V2, ? extends R> joiner;
 
-    private final KTableImpl<K, ?, V1> table1;
-    private final KTableImpl<K, ?, V2> table2;
-    final KTableValueGetterSupplier<K, V1> valueGetterSupplier1;
-    final KTableValueGetterSupplier<K, V2> valueGetterSupplier2;
-    final ValueJoiner<? super V1, ? super V2, ? extends VOut> joiner;
+    protected boolean sendOldValues = false;
 
-    boolean useVersionedSemantics = false;
-    boolean sendOldValues = false;
-
-    KTableKTableAbstractJoin(final KTableImpl<K, ?, V1> table1,
-                             final KTableImpl<K, ?, V2> table2,
-                             final ValueJoiner<? super V1, ? super V2, ? extends VOut> joiner) {
+    KTableKTableAbstractJoin(KTableImpl<K, ?, V1> table1,
+                             KTableImpl<K, ?, V2> table2,
+                             ValueJoiner<? super V1, ? super V2, ? extends R> joiner) {
         this.table1 = table1;
         this.table2 = table2;
         this.valueGetterSupplier1 = table1.valueGetterSupplier();
@@ -44,29 +39,10 @@ public abstract class KTableKTableAbstractJoin<K, V1, V2, VOut> implements
     }
 
     @Override
-    public final boolean enableSendingOldValues(final boolean forceMaterialization) {
-        // Table-table joins require upstream materialization:
-        table1.enableSendingOldValues(true);
-        table2.enableSendingOldValues(true);
+    public final void enableSendingOldValues() {
+        table1.enableSendingOldValues();
+        table2.enableSendingOldValues();
         sendOldValues = true;
-        return true;
     }
 
-    @Override
-    public Set<StoreBuilder<?>> stores() {
-        return null;
-    }
-
-    public void setUseVersionedSemantics(final boolean useVersionedSemantics) {
-        this.useVersionedSemantics = useVersionedSemantics;
-    }
-
-    // VisibleForTesting
-    public boolean isUseVersionedSemantics() {
-        return useVersionedSemantics;
-    }
-
-    public String joinThisParentNodeName() {
-        return table1.graphNode.nodeName();
-    }
 }

@@ -16,11 +16,11 @@
  */
 package org.apache.kafka.common.metrics.stats;
 
-import org.apache.kafka.common.metrics.MeasurableStat;
-import org.apache.kafka.common.metrics.MetricConfig;
-
 import java.util.ArrayList;
 import java.util.List;
+
+import org.apache.kafka.common.metrics.MeasurableStat;
+import org.apache.kafka.common.metrics.MetricConfig;
 
 /**
  * A SampledStat records a single scalar value measured over one or more samples. Each sample is recorded over a
@@ -34,14 +34,13 @@ import java.util.List;
  */
 public abstract class SampledStat implements MeasurableStat {
 
-    private final double initialValue;
+    private double initialValue;
     private int current = 0;
     protected List<Sample> samples;
 
     public SampledStat(double initialValue) {
         this.initialValue = initialValue;
-        // keep one extra placeholder for "overlapping sample" (see purgeObsoleteSamples() logic)
-        this.samples = new ArrayList<>(MetricConfig.DEFAULT_NUM_SAMPLES + 1);
+        this.samples = new ArrayList<Sample>(2);
     }
 
     @Override
@@ -51,13 +50,10 @@ public abstract class SampledStat implements MeasurableStat {
             sample = advance(config, timeMs);
         update(sample, config, value, timeMs);
         sample.eventCount += 1;
-        sample.lastEventMs = timeMs;
     }
 
     private Sample advance(MetricConfig config, long timeMs) {
-        // keep one extra placeholder for "overlapping sample" (see purgeObsoleteSamples() logic)
-        int maxSamples = config.samples() + 1;
-        this.current = (this.current + 1) % maxSamples;
+        this.current = (this.current + 1) % config.samples();
         if (this.current >= samples.size()) {
             Sample sample = newSample(timeMs);
             this.samples.add(sample);
@@ -80,83 +76,57 @@ public abstract class SampledStat implements MeasurableStat {
     }
 
     public Sample current(long timeMs) {
-        if (samples.isEmpty())
+        if (samples.size() == 0)
             this.samples.add(newSample(timeMs));
         return this.samples.get(this.current);
     }
 
     public Sample oldest(long now) {
-        if (samples.isEmpty())
+        if (samples.size() == 0)
             this.samples.add(newSample(now));
         Sample oldest = this.samples.get(0);
         for (int i = 1; i < this.samples.size(); i++) {
             Sample curr = this.samples.get(i);
-            if (curr.startTimeMs < oldest.startTimeMs)
+            if (curr.lastWindowMs < oldest.lastWindowMs)
                 oldest = curr;
         }
         return oldest;
-    }
-
-    @Override
-    public String toString() {
-        return "SampledStat(" +
-            "initialValue=" + initialValue +
-            ", current=" + current +
-            ", samples=" + samples +
-            ')';
     }
 
     protected abstract void update(Sample sample, MetricConfig config, double value, long timeMs);
 
     public abstract double combine(List<Sample> samples, MetricConfig config, long now);
 
-    // purge any samples that lack observed events within the monitored window
+    /* Timeout any windows that have expired in the absence of any events */
     protected void purgeObsoleteSamples(MetricConfig config, long now) {
         long expireAge = config.samples() * config.timeWindowMs();
         for (Sample sample : samples) {
-            // samples overlapping the monitored window are kept,
-            // even if they started before it
-            if (now - sample.lastEventMs >= expireAge) {
+            if (now - sample.lastWindowMs >= expireAge)
                 sample.reset(now);
-            }
         }
     }
 
     protected static class Sample {
         public double initialValue;
         public long eventCount;
-        public long startTimeMs;
-        public long lastEventMs;
+        public long lastWindowMs;
         public double value;
 
         public Sample(double initialValue, long now) {
             this.initialValue = initialValue;
             this.eventCount = 0;
-            this.startTimeMs = now;
-            this.lastEventMs = now;
+            this.lastWindowMs = now;
             this.value = initialValue;
         }
 
         public void reset(long now) {
             this.eventCount = 0;
-            this.startTimeMs = now;
-            this.lastEventMs = now;
+            this.lastWindowMs = now;
             this.value = initialValue;
         }
 
         public boolean isComplete(long timeMs, MetricConfig config) {
-            return timeMs - startTimeMs >= config.timeWindowMs() || eventCount >= config.eventWindow();
-        }
-
-        @Override
-        public String toString() {
-            return "Sample(" +
-                "value=" + value +
-                ", eventCount=" + eventCount +
-                ", startTimeMs=" + startTimeMs +
-                ", lastEventMs=" + lastEventMs +
-                ", initialValue=" + initialValue +
-                ')';
+            return timeMs - lastWindowMs >= config.timeWindowMs() || eventCount >= config.eventWindow();
         }
     }
 

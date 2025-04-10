@@ -16,14 +16,6 @@
  */
 package org.apache.kafka.common.utils;
 
-import org.apache.kafka.common.MetricName;
-import org.apache.kafka.common.metrics.Gauge;
-import org.apache.kafka.common.metrics.MetricConfig;
-import org.apache.kafka.common.metrics.Metrics;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.InputStream;
 import java.lang.management.ManagementFactory;
 import java.util.Properties;
@@ -32,22 +24,27 @@ import javax.management.JMException;
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
 
+import org.apache.kafka.common.MetricName;
+import org.apache.kafka.common.metrics.Gauge;
+import org.apache.kafka.common.metrics.MetricConfig;
+import org.apache.kafka.common.metrics.Metrics;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 public class AppInfoParser {
     private static final Logger log = LoggerFactory.getLogger(AppInfoParser.class);
     private static final String VERSION;
     private static final String COMMIT_ID;
-
-    protected static final String DEFAULT_VALUE = "unknown";
 
     static {
         Properties props = new Properties();
         try (InputStream resourceStream = AppInfoParser.class.getResourceAsStream("/kafka/kafka-version.properties")) {
             props.load(resourceStream);
         } catch (Exception e) {
-            log.warn("Error while loading kafka-version.properties: {}", e.getMessage());
+            log.warn("Error while loading kafka-version.properties :" + e.getMessage());
         }
-        VERSION = props.getProperty("version", DEFAULT_VALUE).trim();
-        COMMIT_ID = props.getProperty("commitId", DEFAULT_VALUE).trim();
+        VERSION = props.getProperty("version", "unknown").trim();
+        COMMIT_ID = props.getProperty("commitId", "unknown").trim();
     }
 
     public static String getVersion() {
@@ -58,18 +55,13 @@ public class AppInfoParser {
         return COMMIT_ID;
     }
 
-    public static synchronized void registerAppInfo(String prefix, String id, Metrics metrics, long nowMs) {
+    public static synchronized void registerAppInfo(String prefix, String id, Metrics metrics) {
         try {
             ObjectName name = new ObjectName(prefix + ":type=app-info,id=" + Sanitizer.jmxSanitize(id));
-            MBeanServer server = ManagementFactory.getPlatformMBeanServer();
-            if (server.isRegistered(name)) {
-                log.info("The mbean of App info: [{}], id: [{}] already exists, so skipping a new mbean creation.", prefix, id);
-                return;
-            }
-            AppInfo mBean = new AppInfo(nowMs);
-            server.registerMBean(mBean, name);
+            AppInfo mBean = new AppInfo();
+            ManagementFactory.getPlatformMBeanServer().registerMBean(mBean, name);
 
-            registerMetrics(metrics, mBean); // prefix will be added later by JmxReporter
+            registerMetrics(metrics); // prefix will be added later by JmxReporter
         } catch (JMException e) {
             log.warn("Error registering AppInfo mbean", e);
         }
@@ -85,8 +77,6 @@ public class AppInfoParser {
             unregisterMetrics(metrics);
         } catch (JMException e) {
             log.warn("Error unregistering AppInfo mbean", e);
-        } finally {
-            log.info("App info {} for {} unregistered", prefix, id);
         }
     }
 
@@ -94,11 +84,10 @@ public class AppInfoParser {
         return metrics.metricName(name, "app-info", "Metric indicating " + name);
     }
 
-    private static void registerMetrics(Metrics metrics, AppInfo appInfo) {
+    private static void registerMetrics(Metrics metrics) {
         if (metrics != null) {
-            metrics.addMetric(metricName(metrics, "version"), new ImmutableValue<>(appInfo.getVersion()));
-            metrics.addMetric(metricName(metrics, "commit-id"), new ImmutableValue<>(appInfo.getCommitId()));
-            metrics.addMetric(metricName(metrics, "start-time-ms"), new ImmutableValue<>(appInfo.getStartTimeMs()));
+            metrics.addMetric(metricName(metrics, "version"), new ImmutableValue<>(VERSION));
+            metrics.addMetric(metricName(metrics, "commit-id"), new ImmutableValue<>(COMMIT_ID));
         }
     }
 
@@ -106,25 +95,19 @@ public class AppInfoParser {
         if (metrics != null) {
             metrics.removeMetric(metricName(metrics, "version"));
             metrics.removeMetric(metricName(metrics, "commit-id"));
-            metrics.removeMetric(metricName(metrics, "start-time-ms"));
         }
     }
 
     public interface AppInfoMBean {
-        String getVersion();
-        String getCommitId();
-        Long getStartTimeMs();
+        public String getVersion();
+        public String getCommitId();
     }
 
     public static class AppInfo implements AppInfoMBean {
 
-        private final Long startTimeMs;
-
-        public AppInfo(long startTimeMs) {
-            this.startTimeMs = startTimeMs;
-            log.info("Kafka version: {}", AppInfoParser.getVersion());
-            log.info("Kafka commitId: {}", AppInfoParser.getCommitId());
-            log.info("Kafka startTimeMs: {}", startTimeMs);
+        public AppInfo() {
+            log.info("Kafka version : " + AppInfoParser.getVersion());
+            log.info("Kafka commitId : " + AppInfoParser.getCommitId());
         }
 
         @Override
@@ -135,11 +118,6 @@ public class AppInfoParser {
         @Override
         public String getCommitId() {
             return AppInfoParser.getCommitId();
-        }
-
-        @Override
-        public Long getStartTimeMs() {
-            return startTimeMs;
         }
 
     }

@@ -18,22 +18,20 @@
 package org.apache.kafka.streams.state.internals;
 
 import org.apache.kafka.common.utils.Bytes;
-
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.nio.ByteBuffer;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.IsEqual.equalTo;
 
-// TODO: this test coverage does not consider session serde yet
 public class SegmentedCacheFunctionTest {
 
     private static final int SEGMENT_INTERVAL = 17;
     private static final int TIMESTAMP = 736213517;
 
-    private static final Bytes THE_KEY = WindowKeySchema.toStoreKeyBinary(new byte[]{0xA, 0xB, 0xC}, TIMESTAMP, 42);
-    private static final Bytes THE_CACHE_KEY = Bytes.wrap(
+    private static final Bytes THE_KEY = WindowStoreUtils.toBinaryKey(new byte[]{0xA, 0xB, 0xC}, TIMESTAMP, 42);
+    private final static Bytes THE_CACHE_KEY = Bytes.wrap(
         ByteBuffer.allocate(8 + THE_KEY.get().length)
             .putLong(TIMESTAMP / SEGMENT_INTERVAL)
             .put(THE_KEY.get()).array()
@@ -58,7 +56,7 @@ public class SegmentedCacheFunctionTest {
 
         assertThat(buffer.getLong(), equalTo(segmentId));
 
-        final byte[] actualKey = new byte[buffer.remaining()];
+        byte[] actualKey = new byte[buffer.remaining()];
         buffer.get(actualKey);
         assertThat(Bytes.wrap(actualKey), equalTo(THE_KEY));
     }
@@ -86,7 +84,7 @@ public class SegmentedCacheFunctionTest {
             ) == 0
         );
 
-        final Bytes sameKeyInPriorSegment = WindowKeySchema.toStoreKeyBinary(new byte[]{0xA, 0xB, 0xC}, 1234, 42);
+        final Bytes sameKeyInPriorSegment = WindowStoreUtils.toBinaryKey(new byte[]{0xA, 0xB, 0xC}, 1234, 42);
 
         assertThat(
             "same keys in different segments should be ordered according to segment",
@@ -104,7 +102,7 @@ public class SegmentedCacheFunctionTest {
             ) > 0
         );
 
-        final Bytes lowerKeyInSameSegment = WindowKeySchema.toStoreKeyBinary(new byte[]{0xA, 0xB, 0xB}, TIMESTAMP - 1, 0);
+        final Bytes lowerKeyInSameSegment = WindowStoreUtils.toBinaryKey(new byte[]{0xA, 0xB, 0xB}, TIMESTAMP - 1, 0);
 
         assertThat(
             "different keys in same segments should be ordered according to key",

@@ -18,56 +18,49 @@ package org.apache.kafka.test;
 
 import org.apache.kafka.clients.consumer.MockConsumer;
 import org.apache.kafka.common.PartitionInfo;
-import org.apache.kafka.common.utils.Time;
+import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.processor.internals.InternalTopicConfig;
 import org.apache.kafka.streams.processor.internals.InternalTopicManager;
+import org.apache.kafka.streams.processor.internals.StreamsKafkaClient;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+
+
 public class MockInternalTopicManager extends InternalTopicManager {
 
-    public final Map<String, Integer> readyTopics = new HashMap<>();
-    private final MockConsumer<byte[], byte[]> restoreConsumer;
-    private final boolean mockCreateInternalTopics;
+    public Map<String, Integer> readyTopics = new HashMap<>();
+    private MockConsumer<byte[], byte[]> restoreConsumer;
 
-    public MockInternalTopicManager(final Time time,
-                                    final StreamsConfig streamsConfig,
-                                    final MockConsumer<byte[], byte[]> restoreConsumer,
-                                    final boolean mockCreateInternalTopics) {
-        super(time, new MockClientSupplier().getAdmin(streamsConfig.originals()), streamsConfig);
+    public MockInternalTopicManager(StreamsConfig streamsConfig, MockConsumer<byte[], byte[]> restoreConsumer) {
+        super(StreamsKafkaClient.create(streamsConfig), 0, 0, new MockTime());
 
         this.restoreConsumer = restoreConsumer;
-        this.mockCreateInternalTopics = mockCreateInternalTopics;
     }
 
     @Override
-    public Set<String> makeReady(final Map<String, InternalTopicConfig> topics) {
-        for (final InternalTopicConfig topic : topics.values()) {
-            final String topicName = topic.name();
-            final int numberOfPartitions = topic.numberOfPartitions().get();
-            readyTopics.put(topicName, numberOfPartitions);
+    public void makeReady(final Map<InternalTopicConfig, Integer> topics) {
+        for (Map.Entry<InternalTopicConfig, Integer> entry : topics.entrySet()) {
+            readyTopics.put(entry.getKey().name(), entry.getValue());
 
             final List<PartitionInfo> partitions = new ArrayList<>();
-            for (int i = 0; i < numberOfPartitions; i++) {
-                partitions.add(new PartitionInfo(topicName, i, null, null, null));
+            for (int i = 0; i < entry.getValue(); i++) {
+                partitions.add(new PartitionInfo(entry.getKey().name(), i, null, null, null));
             }
 
-            restoreConsumer.updatePartitions(topicName, partitions);
+            restoreConsumer.updatePartitions(entry.getKey().name(), partitions);
         }
-        return mockCreateInternalTopics ? topics.keySet() : Collections.emptySet();
     }
 
     @Override
-    protected Map<String, Integer> getNumPartitions(final Set<String> topics,
-                                                    final Set<String> tempUnknownTopics) {
+    public Map<String, Integer> getNumPartitions(final Set<String> topics) {
         final Map<String, Integer> partitions = new HashMap<>();
-        for (final String topic : topics) {
+        for (String topic : topics) {
             partitions.put(topic, restoreConsumer.partitionsFor(topic) == null ?  null : restoreConsumer.partitionsFor(topic).size());
         }
 

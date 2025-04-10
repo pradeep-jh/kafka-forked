@@ -19,7 +19,7 @@ package org.apache.kafka.streams.processor.internals;
 import org.apache.kafka.streams.processor.Cancellable;
 import org.apache.kafka.streams.processor.Punctuator;
 
-public class PunctuationSchedule extends Stamped<ProcessorNode<?, ?, ?, ?>> {
+public class PunctuationSchedule extends Stamped<ProcessorNode> {
 
     private final long interval;
     private final Punctuator punctuator;
@@ -27,26 +27,19 @@ public class PunctuationSchedule extends Stamped<ProcessorNode<?, ?, ?, ?>> {
     // this Cancellable will be re-pointed at the successor schedule in next()
     private final RepointableCancellable cancellable;
 
-    PunctuationSchedule(final ProcessorNode<?, ?, ?, ?> node,
-                        final long time,
-                        final long interval,
-                        final Punctuator punctuator) {
-        this(node, time, interval, punctuator, new RepointableCancellable());
+    PunctuationSchedule(ProcessorNode node, long interval, Punctuator punctuator) {
+        this(node, 0L, interval, punctuator, new RepointableCancellable());
         cancellable.setSchedule(this);
     }
 
-    private PunctuationSchedule(final ProcessorNode<?, ?, ?, ?> node,
-                                final long time,
-                                final long interval,
-                                final Punctuator punctuator,
-                                final RepointableCancellable cancellable) {
+    private PunctuationSchedule(ProcessorNode node, long time, long interval, Punctuator punctuator, RepointableCancellable cancellable) {
         super(node, time);
         this.interval = interval;
         this.punctuator = punctuator;
         this.cancellable = cancellable;
     }
 
-    public ProcessorNode<?, ?, ?, ?> node() {
+    public ProcessorNode node() {
         return value;
     }
 
@@ -66,44 +59,29 @@ public class PunctuationSchedule extends Stamped<ProcessorNode<?, ?, ?, ?>> {
         return isCancelled;
     }
 
-    public PunctuationSchedule next(final long currTimestamp) {
-        long nextPunctuationTime = timestamp + interval;
-        if (currTimestamp >= nextPunctuationTime) {
-            // we missed one ore more punctuations
-            // avoid scheduling a new punctuations immediately, this can happen:
-            // - when using STREAM_TIME punctuation and there was a gap i.e., no data was
-            //   received for at least 2*interval
-            // - when using WALL_CLOCK_TIME and there was a gap i.e., punctuation was delayed for at least 2*interval (GC pause, overload, ...)
-            final long intervalsMissed = (currTimestamp - timestamp) / interval;
-            nextPunctuationTime = timestamp + (intervalsMissed + 1) * interval;
-        }
-
-        final PunctuationSchedule nextSchedule = new PunctuationSchedule(value, nextPunctuationTime, interval, punctuator, cancellable);
+    public PunctuationSchedule next(long currTimestamp) {
+        PunctuationSchedule nextSchedule;
+        // we need to special handle the case when it is firstly triggered (i.e. the timestamp
+        // is equal to the interval) by reschedule based on the currTimestamp
+        if (timestamp == 0L)
+            nextSchedule = new PunctuationSchedule(value, currTimestamp + interval, interval, punctuator, cancellable);
+        else
+            nextSchedule = new PunctuationSchedule(value, timestamp + interval, interval, punctuator, cancellable);
 
         cancellable.setSchedule(nextSchedule);
 
         return nextSchedule;
     }
 
-    @Override
-    public boolean equals(final Object other) {
-        return super.equals(other);
-    }
-
-    @Override
-    public int hashCode() {
-        return super.hashCode();
-    }
-
     private static class RepointableCancellable implements Cancellable {
         private PunctuationSchedule schedule;
 
-        synchronized void setSchedule(final PunctuationSchedule schedule) {
+        synchronized void setSchedule(PunctuationSchedule schedule) {
             this.schedule = schedule;
         }
 
         @Override
-        public synchronized void cancel() {
+        synchronized public void cancel() {
             schedule.markCancelled();
         }
     }

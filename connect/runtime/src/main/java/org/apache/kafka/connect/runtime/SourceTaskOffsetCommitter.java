@@ -16,12 +16,8 @@
  */
 package org.apache.kafka.connect.runtime;
 
-import org.apache.kafka.common.utils.ThreadUtils;
 import org.apache.kafka.connect.errors.ConnectException;
-import org.apache.kafka.connect.source.SourceTask;
 import org.apache.kafka.connect.util.ConnectorTaskId;
-import org.apache.kafka.connect.util.LoggingContext;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,7 +32,7 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * <p>
- * Manages offset commit scheduling and execution for {@link SourceTask}s.
+ * Manages offset commit scheduling and execution for SourceTasks.
  * </p>
  * <p>
  * Unlike sink tasks which directly manage their offset commits in the main poll() thread since
@@ -63,19 +59,26 @@ class SourceTaskOffsetCommitter {
     }
 
     public SourceTaskOffsetCommitter(WorkerConfig config) {
-        this(config, Executors.newSingleThreadScheduledExecutor(ThreadUtils.createThreadFactory(
-                SourceTaskOffsetCommitter.class.getSimpleName() + "-%d", false)),
-                new ConcurrentHashMap<>());
+        this(config, Executors.newSingleThreadScheduledExecutor(),
+                new ConcurrentHashMap<ConnectorTaskId, ScheduledFuture<?>>());
     }
 
     public void close(long timeoutMs) {
-        ThreadUtils.shutdownExecutorServiceQuietly(commitExecutorService, timeoutMs, TimeUnit.MILLISECONDS);
+        commitExecutorService.shutdown();
+        try {
+            if (!commitExecutorService.awaitTermination(timeoutMs, TimeUnit.MILLISECONDS)) {
+                log.error("Graceful shutdown of offset commitOffsets thread timed out.");
+            }
+        } catch (InterruptedException e) {
+            // ignore and allow to exit immediately
+        }
     }
 
     public void schedule(final ConnectorTaskId id, final WorkerSourceTask workerTask) {
         long commitIntervalMs = config.getLong(WorkerConfig.OFFSET_COMMIT_INTERVAL_MS_CONFIG);
-        ScheduledFuture<?> commitFuture = commitExecutorService.scheduleWithFixedDelay(() -> {
-            try (LoggingContext loggingContext = LoggingContext.forOffsets(id)) {
+        ScheduledFuture<?> commitFuture = commitExecutorService.scheduleWithFixedDelay(new Runnable() {
+            @Override
+            public void run() {
                 commit(workerTask);
             }
         }, commitIntervalMs, commitIntervalMs, TimeUnit.MILLISECONDS);
@@ -87,7 +90,7 @@ class SourceTaskOffsetCommitter {
         if (task == null)
             return;
 
-        try (LoggingContext loggingContext = LoggingContext.forTask(id)) {
+        try {
             task.cancel(false);
             if (!task.isDone())
                 task.get();
@@ -99,13 +102,7 @@ class SourceTaskOffsetCommitter {
         }
     }
 
-    // Visible for testing
-    static void commit(WorkerSourceTask workerTask) {
-        if (!workerTask.shouldCommitOffsets()) {
-            log.trace("{} Skipping offset commit as there are no offsets that should be committed", workerTask);
-            return;
-        }
-
+    private void commit(WorkerSourceTask workerTask) {
         log.debug("{} Committing offsets", workerTask);
         try {
             if (workerTask.commitOffsets()) {

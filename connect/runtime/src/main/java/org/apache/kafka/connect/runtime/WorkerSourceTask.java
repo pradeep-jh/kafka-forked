@@ -16,287 +16,364 @@
  */
 package org.apache.kafka.connect.runtime;
 
-import org.apache.kafka.clients.producer.Producer;
+import org.apache.kafka.clients.producer.Callback;
+import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
-import org.apache.kafka.common.internals.Plugin;
+import org.apache.kafka.common.KafkaException;
+import org.apache.kafka.common.errors.RetriableException;
+import org.apache.kafka.common.metrics.Sensor;
+import org.apache.kafka.common.metrics.stats.Avg;
+import org.apache.kafka.common.metrics.stats.Max;
+import org.apache.kafka.common.metrics.stats.Rate;
+import org.apache.kafka.common.metrics.stats.Total;
+import org.apache.kafka.common.metrics.stats.Value;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.connect.errors.ConnectException;
-import org.apache.kafka.connect.runtime.errors.ErrorHandlingMetrics;
-import org.apache.kafka.connect.runtime.errors.ErrorReporter;
-import org.apache.kafka.connect.runtime.errors.ProcessingContext;
-import org.apache.kafka.connect.runtime.errors.RetryWithToleranceOperator;
-import org.apache.kafka.connect.runtime.errors.Stage;
-import org.apache.kafka.connect.runtime.errors.ToleranceType;
-import org.apache.kafka.connect.runtime.isolation.LoaderSwap;
+import org.apache.kafka.connect.runtime.ConnectMetrics.MetricGroup;
 import org.apache.kafka.connect.source.SourceRecord;
 import org.apache.kafka.connect.source.SourceTask;
-import org.apache.kafka.connect.storage.CloseableOffsetStorageReader;
-import org.apache.kafka.connect.storage.ClusterConfigState;
-import org.apache.kafka.connect.storage.ConnectorOffsetBackingStore;
 import org.apache.kafka.connect.storage.Converter;
-import org.apache.kafka.connect.storage.HeaderConverter;
+import org.apache.kafka.connect.storage.OffsetStorageReader;
 import org.apache.kafka.connect.storage.OffsetStorageWriter;
-import org.apache.kafka.connect.storage.StatusBackingStore;
+import org.apache.kafka.connect.util.ConnectUtils;
 import org.apache.kafka.connect.util.ConnectorTaskId;
-import org.apache.kafka.connect.util.TopicAdmin;
-import org.apache.kafka.connect.util.TopicCreationGroup;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Function;
-import java.util.function.Supplier;
-
-import static org.apache.kafka.connect.runtime.SubmittedRecords.CommittableOffsets;
 
 /**
- * {@link WorkerTask} that uses a {@link SourceTask} to ingest data into Kafka.
+ * WorkerTask that uses a SourceTask to ingest data into Kafka.
  */
-class WorkerSourceTask extends AbstractWorkerSourceTask {
+class WorkerSourceTask extends WorkerTask {
     private static final Logger log = LoggerFactory.getLogger(WorkerSourceTask.class);
 
-    private volatile CommittableOffsets committableOffsets;
-    //VisibleForTesting
-    final SubmittedRecords submittedRecords;
-    private final AtomicReference<Exception> producerSendException;
+    private static final long SEND_FAILED_BACKOFF_MS = 100;
+
+    private final WorkerConfig workerConfig;
+    private final SourceTask task;
+    private final Converter keyConverter;
+    private final Converter valueConverter;
+    private final TransformationChain<SourceRecord> transformationChain;
+    private KafkaProducer<byte[], byte[]> producer;
+    private final OffsetStorageReader offsetReader;
+    private final OffsetStorageWriter offsetWriter;
+    private final Time time;
+    private final SourceTaskMetricsGroup sourceTaskMetricsGroup;
+
+    private List<SourceRecord> toSend;
+    private boolean lastSendFailed; // Whether the last send failed *synchronously*, i.e. never made it into the producer's RecordAccumulator
+    // Use IdentityHashMap to ensure correctness with duplicate records. This is a HashMap because
+    // there is no IdentityHashSet.
+    private IdentityHashMap<ProducerRecord<byte[], byte[]>, ProducerRecord<byte[], byte[]>> outstandingMessages;
+    // A second buffer is used while an offset flush is running
+    private IdentityHashMap<ProducerRecord<byte[], byte[]>, ProducerRecord<byte[], byte[]>> outstandingMessagesBacklog;
+    private boolean flushing;
+    private CountDownLatch stopRequestedLatch;
+
+    private Map<String, String> taskConfig;
+    private boolean finishedStart = false;
+    private boolean startedShutdownBeforeStartCompleted = false;
 
     public WorkerSourceTask(ConnectorTaskId id,
                             SourceTask task,
                             TaskStatus.Listener statusListener,
                             TargetState initialState,
-                            Plugin<Converter> keyConverterPlugin,
-                            Plugin<Converter> valueConverterPlugin,
-                            ErrorHandlingMetrics errorMetrics,
-                            Plugin<HeaderConverter> headerConverterPlugin,
-                            TransformationChain<SourceRecord, SourceRecord> transformationChain,
-                            Producer<byte[], byte[]> producer,
-                            TopicAdmin admin,
-                            Map<String, TopicCreationGroup> topicGroups,
-                            CloseableOffsetStorageReader offsetReader,
+                            Converter keyConverter,
+                            Converter valueConverter,
+                            TransformationChain<SourceRecord> transformationChain,
+                            KafkaProducer<byte[], byte[]> producer,
+                            OffsetStorageReader offsetReader,
                             OffsetStorageWriter offsetWriter,
-                            ConnectorOffsetBackingStore offsetStore,
                             WorkerConfig workerConfig,
-                            ClusterConfigState configState,
                             ConnectMetrics connectMetrics,
                             ClassLoader loader,
-                            Time time,
-                            RetryWithToleranceOperator<SourceRecord> retryWithToleranceOperator,
-                            StatusBackingStore statusBackingStore,
-                            Executor closeExecutor,
-                            Supplier<List<ErrorReporter<SourceRecord>>> errorReportersSupplier,
-                            Function<ClassLoader, LoaderSwap> pluginLoaderSwapper) {
+                            Time time) {
+        super(id, statusListener, initialState, loader, connectMetrics);
 
-        super(id, task, statusListener, initialState, configState, keyConverterPlugin, valueConverterPlugin, headerConverterPlugin, transformationChain,
-                null, producer,
-                admin, topicGroups, offsetReader, offsetWriter, offsetStore, workerConfig, connectMetrics, errorMetrics, loader,
-                time, retryWithToleranceOperator, statusBackingStore, closeExecutor, errorReportersSupplier, pluginLoaderSwapper);
+        this.workerConfig = workerConfig;
+        this.task = task;
+        this.keyConverter = keyConverter;
+        this.valueConverter = valueConverter;
+        this.transformationChain = transformationChain;
+        this.producer = producer;
+        this.offsetReader = offsetReader;
+        this.offsetWriter = offsetWriter;
+        this.time = time;
 
-        this.committableOffsets = CommittableOffsets.EMPTY;
-        this.submittedRecords = new SubmittedRecords();
-        this.producerSendException = new AtomicReference<>();
+        this.toSend = null;
+        this.lastSendFailed = false;
+        this.outstandingMessages = new IdentityHashMap<>();
+        this.outstandingMessagesBacklog = new IdentityHashMap<>();
+        this.flushing = false;
+        this.stopRequestedLatch = new CountDownLatch(1);
+        this.sourceTaskMetricsGroup = new SourceTaskMetricsGroup(id, connectMetrics);
     }
 
     @Override
-    protected void prepareToInitializeTask() {
-        // No-op
-    }
-
-    @Override
-    protected void prepareToEnterSendLoop() {
-        // No-op
-    }
-
-    @Override
-    protected void beginSendIteration() {
-        updateCommittableOffsets();
-    }
-
-    @Override
-    protected void prepareToPollTask() {
-        maybeThrowProducerSendException();
-    }
-
-    @Override
-    protected void recordDropped(SourceRecord record) {
-        commitTaskRecord(record, null);
-    }
-
-    @Override
-    protected Optional<SubmittedRecords.SubmittedRecord> prepareToSendRecord(
-            SourceRecord sourceRecord,
-            ProducerRecord<byte[], byte[]> producerRecord
-    ) {
-        maybeThrowProducerSendException();
-        return Optional.of(submittedRecords.submit(sourceRecord));
-    }
-
-    @Override
-    protected void recordDispatched(SourceRecord record) {
-        // No-op
-    }
-
-    @Override
-    protected void batchDispatched() {
-        // No-op
-    }
-
-    @Override
-    protected void recordSent(
-            SourceRecord sourceRecord,
-            ProducerRecord<byte[], byte[]> producerRecord,
-            RecordMetadata recordMetadata
-    ) {
-        commitTaskRecord(sourceRecord, recordMetadata);
-    }
-
-    @Override
-    protected void producerSendFailed(
-            ProcessingContext<SourceRecord> context,
-            boolean synchronous,
-            ProducerRecord<byte[], byte[]> producerRecord,
-            SourceRecord preTransformRecord,
-            Exception e
-    ) {
-        if (synchronous) {
-            throw new ConnectException("Unrecoverable exception trying to send", e);
+    public void initialize(TaskConfig taskConfig) {
+        try {
+            this.taskConfig = taskConfig.originalsStrings();
+        } catch (Throwable t) {
+            log.error("{} Task failed initialization and will not be started.", this, t);
+            onFailure(t);
         }
+    }
 
-        String topic = producerRecord.topic();
-        if (retryWithToleranceOperator.getErrorToleranceType() == ToleranceType.ALL) {
-            log.trace(
-                    "Ignoring failed record send: {} failed to send record to {}: ",
-                    WorkerSourceTask.this,
-                    topic,
-                    e
-            );
-            // executeFailed here allows the use of existing logging infrastructure/configuration
-            retryWithToleranceOperator.executeFailed(
-                    context,
-                    Stage.KAFKA_PRODUCE,
-                    WorkerSourceTask.class,
-                    e
-            );
-            commitTaskRecord(preTransformRecord, null);
-        } else {
-            producerSendException.compareAndSet(null, e);
+    protected void close() {
+        producer.close(30, TimeUnit.SECONDS);
+        transformationChain.close();
+    }
+
+    @Override
+    protected void releaseResources() {
+        sourceTaskMetricsGroup.close();
+    }
+
+    @Override
+    public void stop() {
+        super.stop();
+        stopRequestedLatch.countDown();
+        synchronized (this) {
+            if (finishedStart)
+                task.stop();
+            else
+                startedShutdownBeforeStartCompleted = true;
         }
     }
 
     @Override
-    protected void finalOffsetCommit(boolean failed) {
-        // It should still be safe to commit offsets since any exception would have
-        // simply resulted in not getting more records but all the existing records should be ok to flush
-        // and commit offsets. Worst case, task.commit() will also throw an exception causing the offset
-        // commit to fail.
-        submittedRecords.awaitAllMessages(
-                workerConfig.getLong(WorkerConfig.OFFSET_COMMIT_TIMEOUT_MS_CONFIG),
-                TimeUnit.MILLISECONDS
-        );
-        updateCommittableOffsets();
-        commitOffsets();
+    public void execute() {
+        try {
+            task.initialize(new WorkerSourceTaskContext(offsetReader));
+            task.start(taskConfig);
+            log.info("{} Source task finished initialization and start", this);
+            synchronized (this) {
+                if (startedShutdownBeforeStartCompleted) {
+                    task.stop();
+                    return;
+                }
+                finishedStart = true;
+            }
+
+            while (!isStopping()) {
+                if (shouldPause()) {
+                    onPause();
+                    if (awaitUnpause()) {
+                        onResume();
+                    }
+                    continue;
+                }
+
+                if (toSend == null) {
+                    log.trace("{} Nothing to send to Kafka. Polling source for additional records", this);
+                    long start = time.milliseconds();
+                    toSend = task.poll();
+                    if (toSend != null) {
+                        recordPollReturned(toSend.size(), time.milliseconds() - start);
+                    }
+                }
+                if (toSend == null)
+                    continue;
+                log.debug("{} About to send " + toSend.size() + " records to Kafka", this);
+                if (!sendRecords())
+                    stopRequestedLatch.await(SEND_FAILED_BACKOFF_MS, TimeUnit.MILLISECONDS);
+            }
+        } catch (InterruptedException e) {
+            // Ignore and allow to exit.
+        } finally {
+            // It should still be safe to commit offsets since any exception would have
+            // simply resulted in not getting more records but all the existing records should be ok to flush
+            // and commit offsets. Worst case, task.flush() will also throw an exception causing the offset commit
+            // to fail.
+            commitOffsets();
+        }
     }
 
     /**
-     * @return whether an attempt to commit offsets should be made for the task (i.e., there are pending uncommitted
-     * offsets and the task's producer has not already failed to send a record with a non-retriable error).
+     * Try to send a batch of records. If a send fails and is retriable, this saves the remainder of the batch so it can
+     * be retried after backing off. If a send fails and is not retriable, this will throw a ConnectException.
+     * @return true if all messages were sent, false if some need to be retried
      */
-    public boolean shouldCommitOffsets() {
-        return !isFailed();
+    private boolean sendRecords() {
+        int processed = 0;
+        recordBatch(toSend.size());
+        final SourceRecordWriteCounter counter = new SourceRecordWriteCounter(toSend.size(), sourceTaskMetricsGroup);
+        for (final SourceRecord preTransformRecord : toSend) {
+            final SourceRecord record = transformationChain.apply(preTransformRecord);
+
+            if (record == null) {
+                counter.skipRecord();
+                commitTaskRecord(preTransformRecord);
+                continue;
+            }
+
+            byte[] key = keyConverter.fromConnectData(record.topic(), record.keySchema(), record.key());
+            byte[] value = valueConverter.fromConnectData(record.topic(), record.valueSchema(), record.value());
+            final ProducerRecord<byte[], byte[]> producerRecord = new ProducerRecord<>(record.topic(), record.kafkaPartition(),
+                    ConnectUtils.checkAndConvertTimestamp(record.timestamp()), key, value);
+            log.trace("{} Appending record with key {}, value {}", this, record.key(), record.value());
+            // We need this queued first since the callback could happen immediately (even synchronously in some cases).
+            // Because of this we need to be careful about handling retries -- we always save the previously attempted
+            // record as part of toSend and need to use a flag to track whether we should actually add it to the outstanding
+            // messages and update the offsets.
+            synchronized (this) {
+                if (!lastSendFailed) {
+                    if (!flushing) {
+                        outstandingMessages.put(producerRecord, producerRecord);
+                    } else {
+                        outstandingMessagesBacklog.put(producerRecord, producerRecord);
+                    }
+                    // Offsets are converted & serialized in the OffsetWriter
+                    offsetWriter.offset(record.sourcePartition(), record.sourceOffset());
+                }
+            }
+            try {
+                final String topic = producerRecord.topic();
+                producer.send(
+                        producerRecord,
+                        new Callback() {
+                            @Override
+                            public void onCompletion(RecordMetadata recordMetadata, Exception e) {
+                                if (e != null) {
+                                    // Given the default settings for zero data loss, this should basically never happen --
+                                    // between "infinite" retries, indefinite blocking on full buffers, and "infinite" request
+                                    // timeouts, callbacks with exceptions should never be invoked in practice. If the
+                                    // user overrode these settings, the best we can do is notify them of the failure via
+                                    // logging.
+                                    log.error("{} failed to send record to {}: {}", this, topic, e);
+                                    log.debug("{} Failed record: {}", this, preTransformRecord);
+                                } else {
+                                    log.trace("{} Wrote record successfully: topic {} partition {} offset {}",
+                                            this,
+                                            recordMetadata.topic(), recordMetadata.partition(),
+                                            recordMetadata.offset());
+                                    commitTaskRecord(preTransformRecord);
+                                }
+                                recordSent(producerRecord);
+                                counter.completeRecord();
+                            }
+                        });
+                lastSendFailed = false;
+            } catch (RetriableException e) {
+                log.warn("{} Failed to send {}, backing off before retrying:", this, producerRecord, e);
+                toSend = toSend.subList(processed, toSend.size());
+                lastSendFailed = true;
+                counter.retryRemaining();
+                return false;
+            } catch (KafkaException e) {
+                throw new ConnectException("Unrecoverable exception trying to send", e);
+            }
+            processed++;
+        }
+        toSend = null;
+        return true;
+    }
+
+    private void commitTaskRecord(SourceRecord record) {
+        try {
+            task.commitRecord(record);
+        } catch (Throwable t) {
+            log.error("{} Exception thrown while calling task.commitRecord()", this, t);
+        }
+    }
+
+    private synchronized void recordSent(final ProducerRecord<byte[], byte[]> record) {
+        ProducerRecord<byte[], byte[]> removed = outstandingMessages.remove(record);
+        // While flushing, we may also see callbacks for items in the backlog
+        if (removed == null && flushing)
+            removed = outstandingMessagesBacklog.remove(record);
+        // But if neither one had it, something is very wrong
+        if (removed == null) {
+            log.error("{} CRITICAL Saw callback for record that was not present in the outstanding message set: {}", this, record);
+        } else if (flushing && outstandingMessages.isEmpty()) {
+            // flush thread may be waiting on the outstanding messages to clear
+            this.notifyAll();
+        }
     }
 
     public boolean commitOffsets() {
         long commitTimeoutMs = workerConfig.getLong(WorkerConfig.OFFSET_COMMIT_TIMEOUT_MS_CONFIG);
 
-        log.debug("{} Committing offsets", this);
+        log.info("{} Committing offsets", this);
 
         long started = time.milliseconds();
         long timeout = started + commitTimeoutMs;
 
-        CommittableOffsets offsetsToCommit;
         synchronized (this) {
-            offsetsToCommit = this.committableOffsets;
-            this.committableOffsets = CommittableOffsets.EMPTY;
-        }
+            // First we need to make sure we snapshot everything in exactly the current state. This
+            // means both the current set of messages we're still waiting to finish, stored in this
+            // class, which setting flushing = true will handle by storing any new values into a new
+            // buffer; and the current set of user-specified offsets, stored in the
+            // OffsetStorageWriter, for which we can use beginFlush() to initiate the snapshot.
+            flushing = true;
+            boolean flushStarted = offsetWriter.beginFlush();
+            // Still wait for any producer records to flush, even if there aren't any offsets to write
+            // to persistent storage
 
-        if (offsetsToCommit.isEmpty()) {
-            log.debug("{} Either no records were produced by the task since the last offset commit, " 
-                    + "or every record has been filtered out by a transformation " 
-                    + "or dropped due to transformation or conversion errors.",
-                    this
-            );
-            // We continue with the offset commit process here instead of simply returning immediately
-            // in order to invoke SourceTask::commit and record metrics for a successful offset commit
-        } else {
-            log.info("{} Committing offsets for {} acknowledged messages", this, offsetsToCommit.numCommittableMessages());
-            if (offsetsToCommit.hasPending()) {
-                log.debug("{} There are currently {} pending messages spread across {} source partitions whose offsets will not be committed. "
-                                + "The source partition with the most pending messages is {}, with {} pending messages",
-                        this,
-                        offsetsToCommit.numUncommittableMessages(),
-                        offsetsToCommit.numDeques(),
-                        offsetsToCommit.largestDequePartition(),
-                        offsetsToCommit.largestDequeSize()
-                );
-            } else {
-                log.debug("{} There are currently no pending messages for this offset commit; "
-                                + "all messages dispatched to the task's producer since the last commit have been acknowledged",
-                        this
-                );
+            // Next we need to wait for all outstanding messages to finish sending
+            log.info("{} flushing {} outstanding messages for offset commit", this, outstandingMessages.size());
+            while (!outstandingMessages.isEmpty()) {
+                try {
+                    long timeoutMs = timeout - time.milliseconds();
+                    if (timeoutMs <= 0) {
+                        log.error("{} Failed to flush, timed out while waiting for producer to flush outstanding {} messages", this, outstandingMessages.size());
+                        finishFailedFlush();
+                        recordCommitFailure(time.milliseconds() - started, null);
+                        return false;
+                    }
+                    this.wait(timeoutMs);
+                } catch (InterruptedException e) {
+                    // We can get interrupted if we take too long committing when the work thread shutdown is requested,
+                    // requiring a forcible shutdown. Give up since we can't safely commit any offsets, but also need
+                    // to stop immediately
+                    log.error("{} Interrupted while flushing messages, offsets will not be committed", this);
+                    finishFailedFlush();
+                    recordCommitFailure(time.milliseconds() - started, null);
+                    return false;
+                }
+            }
+
+            if (!flushStarted) {
+                // There was nothing in the offsets to process, but we still waited for the data in the
+                // buffer to flush. This is useful since this can feed into metrics to monitor, e.g.
+                // flush time, which can be used for monitoring even if the connector doesn't record any
+                // offsets.
+                finishSuccessfulFlush();
+                long durationMillis = time.milliseconds() - started;
+                recordCommitSuccess(durationMillis);
+                log.debug("{} Finished offset commitOffsets successfully in {} ms",
+                        this, durationMillis);
+
+                commitSourceTask();
+                return true;
             }
         }
 
-        // Update the offset writer with any new offsets for records that have been acked.
-        // The offset writer will continue to track all offsets until they are able to be successfully flushed.
-        // IOW, if the offset writer fails to flush, it keeps those offset for the next attempt,
-        // though we may update them here with newer offsets for acked records.
-        offsetsToCommit.offsets().forEach(offsetWriter::offset);
-
-        boolean shouldFlush;
-        try {
-            shouldFlush = offsetWriter.beginFlush(timeout - time.milliseconds(), TimeUnit.MILLISECONDS);
-        } catch (InterruptedException e) {
-            log.warn("{} Interrupted while waiting for previous offset flush to complete, cancelling", this);
-            recordCommitFailure(time.milliseconds() - started);
-            return false;
-        } catch (TimeoutException e) {
-            log.warn("{} Timed out while waiting for previous offset flush to complete, cancelling", this);
-            recordCommitFailure(time.milliseconds() - started);
-            return false;
-        }
-        if (!shouldFlush) {
-            // There was nothing in the offsets to process, but we still mark a successful offset commit.
-            long durationMillis = time.milliseconds() - started;
-            recordCommitSuccess(durationMillis);
-            log.debug("{} Finished offset commitOffsets successfully in {} ms",
-                    this, durationMillis);
-
-            commitSourceTask();
-            return true;
-        }
-
         // Now we can actually flush the offsets to user storage.
-        Future<Void> flushFuture = offsetWriter.doFlush((error, result) -> {
-            if (error != null) {
-                log.error("{} Failed to flush offsets to storage: ", WorkerSourceTask.this, error);
-            } else {
-                log.trace("{} Finished flushing offsets to storage", WorkerSourceTask.this);
+        Future<Void> flushFuture = offsetWriter.doFlush(new org.apache.kafka.connect.util.Callback<Void>() {
+            @Override
+            public void onCompletion(Throwable error, Void result) {
+                if (error != null) {
+                    log.error("{} Failed to flush offsets to storage: ", this, error);
+                } else {
+                    log.trace("{} Finished flushing offsets to storage", this);
+                }
             }
         });
         // Very rare case: offsets were unserializable and we finished immediately, unable to store
         // any data
         if (flushFuture == null) {
-            offsetWriter.cancelFlush();
-            recordCommitFailure(time.milliseconds() - started);
+            finishFailedFlush();
+            recordCommitFailure(time.milliseconds() - started, null);
             return false;
         }
         try {
@@ -307,24 +384,25 @@ class WorkerSourceTask extends AbstractWorkerSourceTask {
             // could look a little confusing.
         } catch (InterruptedException e) {
             log.warn("{} Flush of offsets interrupted, cancelling", this);
-            offsetWriter.cancelFlush();
-            recordCommitFailure(time.milliseconds() - started);
+            finishFailedFlush();
+            recordCommitFailure(time.milliseconds() - started, e);
             return false;
         } catch (ExecutionException e) {
             log.error("{} Flush of offsets threw an unexpected exception: ", this, e);
-            offsetWriter.cancelFlush();
-            recordCommitFailure(time.milliseconds() - started);
+            finishFailedFlush();
+            recordCommitFailure(time.milliseconds() - started, e);
             return false;
         } catch (TimeoutException e) {
-            log.error("{} Timed out waiting to flush offsets to storage; will try again on next flush interval with latest offsets", this);
-            offsetWriter.cancelFlush();
-            recordCommitFailure(time.milliseconds() - started);
+            log.error("{} Timed out waiting to flush offsets to storage", this);
+            finishFailedFlush();
+            recordCommitFailure(time.milliseconds() - started, null);
             return false;
         }
 
+        finishSuccessfulFlush();
         long durationMillis = time.milliseconds() - started;
         recordCommitSuccess(durationMillis);
-        log.debug("{} Finished commitOffsets successfully in {} ms",
+        log.info("{} Finished commitOffsets successfully in {} ms",
                 this, durationMillis);
 
         commitSourceTask();
@@ -332,21 +410,27 @@ class WorkerSourceTask extends AbstractWorkerSourceTask {
         return true;
     }
 
-    // Visible for testing
-    void updateCommittableOffsets() {
-        CommittableOffsets newOffsets = submittedRecords.committableOffsets();
-        synchronized (this) {
-            this.committableOffsets = this.committableOffsets.updatedWith(newOffsets);
+    private void commitSourceTask() {
+        try {
+            this.task.commit();
+        } catch (Throwable t) {
+            log.error("{} Exception thrown while calling task.commit()", this, t);
         }
     }
 
-    private void maybeThrowProducerSendException() {
-        if (producerSendException.get() != null) {
-            throw new ConnectException(
-                    "Unrecoverable exception from producer send callback",
-                    producerSendException.get()
-            );
-        }
+    private synchronized void finishFailedFlush() {
+        offsetWriter.cancelFlush();
+        outstandingMessages.putAll(outstandingMessagesBacklog);
+        outstandingMessagesBacklog.clear();
+        flushing = false;
+    }
+
+    private synchronized void finishSuccessfulFlush() {
+        // If we were successful, we can just swap instead of replacing items back into the original map
+        IdentityHashMap<ProducerRecord<byte[], byte[]>, ProducerRecord<byte[], byte[]>> temp = outstandingMessages;
+        outstandingMessages = outstandingMessagesBacklog;
+        outstandingMessagesBacklog = temp;
+        flushing = false;
     }
 
     @Override
@@ -356,4 +440,99 @@ class WorkerSourceTask extends AbstractWorkerSourceTask {
                 '}';
     }
 
+    protected void recordPollReturned(int numRecordsInBatch, long duration) {
+        sourceTaskMetricsGroup.recordPoll(numRecordsInBatch, duration);
+    }
+
+    SourceTaskMetricsGroup sourceTaskMetricsGroup() {
+        return sourceTaskMetricsGroup;
+    }
+
+    static class SourceRecordWriteCounter {
+        private final SourceTaskMetricsGroup metricsGroup;
+        private final int batchSize;
+        private boolean completed = false;
+        private int counter;
+        public SourceRecordWriteCounter(int batchSize, SourceTaskMetricsGroup metricsGroup) {
+            assert batchSize > 0;
+            assert metricsGroup != null;
+            this.batchSize = batchSize;
+            counter = batchSize;
+            this.metricsGroup = metricsGroup;
+        }
+        public void skipRecord() {
+            if (counter > 0 && --counter == 0) {
+                finishedAllWrites();
+            }
+        }
+        public void completeRecord() {
+            if (counter > 0 && --counter == 0) {
+                finishedAllWrites();
+            }
+        }
+        public void retryRemaining() {
+            finishedAllWrites();
+        }
+        private void finishedAllWrites() {
+            if (!completed) {
+                metricsGroup.recordWrite(batchSize - counter);
+                completed = true;
+            }
+        }
+    }
+
+    static class SourceTaskMetricsGroup {
+        private final MetricGroup metricGroup;
+        private final Sensor sourceRecordPoll;
+        private final Sensor sourceRecordWrite;
+        private final Sensor sourceRecordActiveCount;
+        private final Sensor pollTime;
+        private int activeRecordCount;
+
+        public SourceTaskMetricsGroup(ConnectorTaskId id, ConnectMetrics connectMetrics) {
+            ConnectMetricsRegistry registry = connectMetrics.registry();
+            metricGroup = connectMetrics.group(registry.sourceTaskGroupName(),
+                    registry.connectorTagName(), id.connector(),
+                    registry.taskTagName(), Integer.toString(id.task()));
+
+            sourceRecordPoll = metricGroup.sensor("source-record-poll");
+            sourceRecordPoll.add(metricGroup.metricName(registry.sourceRecordPollRate), new Rate());
+            sourceRecordPoll.add(metricGroup.metricName(registry.sourceRecordPollTotal), new Total());
+
+            sourceRecordWrite = metricGroup.sensor("source-record-write");
+            sourceRecordWrite.add(metricGroup.metricName(registry.sourceRecordWriteRate), new Rate());
+            sourceRecordWrite.add(metricGroup.metricName(registry.sourceRecordWriteTotal), new Total());
+
+            pollTime = metricGroup.sensor("poll-batch-time");
+            pollTime.add(metricGroup.metricName(registry.sourceRecordPollBatchTimeMax), new Max());
+            pollTime.add(metricGroup.metricName(registry.sourceRecordPollBatchTimeAvg), new Avg());
+
+            sourceRecordActiveCount = metricGroup.metrics().sensor("sink-record-active-count");
+            sourceRecordActiveCount.add(metricGroup.metricName(registry.sourceRecordActiveCount), new Value());
+            sourceRecordActiveCount.add(metricGroup.metricName(registry.sourceRecordActiveCountMax), new Max());
+            sourceRecordActiveCount.add(metricGroup.metricName(registry.sourceRecordActiveCountAvg), new Avg());
+        }
+
+        void close() {
+            metricGroup.close();
+        }
+
+        void recordPoll(int batchSize, long duration) {
+            sourceRecordPoll.record(batchSize);
+            pollTime.record(duration);
+            activeRecordCount += batchSize;
+            sourceRecordActiveCount.record(activeRecordCount);
+        }
+
+        void recordWrite(int recordCount) {
+            sourceRecordWrite.record(recordCount);
+            activeRecordCount -= recordCount;
+            activeRecordCount = Math.max(0, activeRecordCount);
+            sourceRecordActiveCount.record(activeRecordCount);
+        }
+
+        protected MetricGroup metricGroup() {
+            return metricGroup;
+        }
+    }
 }

@@ -16,22 +16,6 @@
  */
 package org.apache.kafka.tools;
 
-import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.ConsumerRecords;
-import org.apache.kafka.clients.consumer.GroupProtocol;
-import org.apache.kafka.clients.consumer.KafkaConsumer;
-import org.apache.kafka.clients.consumer.OffsetAndMetadata;
-import org.apache.kafka.clients.consumer.OffsetCommitCallback;
-import org.apache.kafka.clients.consumer.RangeAssignor;
-import org.apache.kafka.clients.consumer.RoundRobinAssignor;
-import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.errors.FencedInstanceIdException;
-import org.apache.kafka.common.errors.WakeupException;
-import org.apache.kafka.common.serialization.StringDeserializer;
-import org.apache.kafka.common.utils.Utils;
-
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
@@ -41,22 +25,29 @@ import com.fasterxml.jackson.databind.JsonSerializer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializerProvider;
 import com.fasterxml.jackson.databind.module.SimpleModule;
-
 import net.sourceforge.argparse4j.ArgumentParsers;
 import net.sourceforge.argparse4j.inf.ArgumentParser;
 import net.sourceforge.argparse4j.inf.ArgumentParserException;
-import net.sourceforge.argparse4j.inf.MutuallyExclusiveGroup;
 import net.sourceforge.argparse4j.inf.Namespace;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.clients.consumer.OffsetCommitCallback;
+import org.apache.kafka.clients.consumer.RangeAssignor;
+import org.apache.kafka.clients.consumer.RoundRobinAssignor;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.WakeupException;
+import org.apache.kafka.common.serialization.StringDeserializer;
+import org.apache.kafka.common.utils.Exit;
+import org.apache.kafka.common.utils.Utils;
 
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.PrintStream;
-import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -64,7 +55,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
-import java.util.stream.Collectors;
 
 import static net.sourceforge.argparse4j.impl.Arguments.store;
 import static net.sourceforge.argparse4j.impl.Arguments.storeTrue;
@@ -79,7 +69,7 @@ import static net.sourceforge.argparse4j.impl.Arguments.storeTrue;
  *     See {@link org.apache.kafka.tools.VerifiableConsumer.PartitionsRevoked}</li>
  * <li>partitions_assigned: outputs the partitions assigned through {@link ConsumerRebalanceListener#onPartitionsAssigned(Collection)}
  *     See {@link org.apache.kafka.tools.VerifiableConsumer.PartitionsAssigned}.</li>
- * <li>records_consumed: contains a summary of records consumed in a single call to {@link KafkaConsumer#poll(Duration)}.
+ * <li>records_consumed: contains a summary of records consumed in a single call to {@link KafkaConsumer#poll(long)}.
  *     See {@link org.apache.kafka.tools.VerifiableConsumer.RecordsConsumed}.</li>
  * <li>record_data: contains the key, value, and offset of an individual consumed record (only included if verbose
  *     output is enabled). See {@link org.apache.kafka.tools.VerifiableConsumer.RecordData}.</li>
@@ -91,8 +81,6 @@ import static net.sourceforge.argparse4j.impl.Arguments.storeTrue;
  */
 public class VerifiableConsumer implements Closeable, OffsetCommitCallback, ConsumerRebalanceListener {
 
-    private static final Logger log = LoggerFactory.getLogger(VerifiableConsumer.class);
-
     private final ObjectMapper mapper = new ObjectMapper();
     private final PrintStream out;
     private final KafkaConsumer<String, String> consumer;
@@ -101,8 +89,9 @@ public class VerifiableConsumer implements Closeable, OffsetCommitCallback, Cons
     private final boolean useAsyncCommit;
     private final boolean verbose;
     private final int maxMessages;
-    private final CountDownLatch shutdownLatch = new CountDownLatch(1);
     private int consumedMessages = 0;
+
+    private CountDownLatch shutdownLatch = new CountDownLatch(1);
 
     public VerifiableConsumer(KafkaConsumer<String, String> consumer,
                               PrintStream out,
@@ -164,9 +153,8 @@ public class VerifiableConsumer implements Closeable, OffsetCommitCallback, Cons
                     partitionRecords.size(), minOffset, maxOffset));
 
             if (verbose) {
-                for (ConsumerRecord<String, String> record : partitionRecords) {
+                for (ConsumerRecord<String, String> record : partitionRecords)
                     printJson(new RecordData(record));
-                }
             }
 
             consumedMessages += partitionRecords.size();
@@ -221,8 +209,6 @@ public class VerifiableConsumer implements Closeable, OffsetCommitCallback, Cons
             // we only call wakeup() once to close the consumer, so this recursion should be safe
             commitSync(offsets);
             throw e;
-        } catch (FencedInstanceIdException e) {
-            throw e;
         } catch (Exception e) {
             onComplete(offsets, e);
         }
@@ -233,8 +219,8 @@ public class VerifiableConsumer implements Closeable, OffsetCommitCallback, Cons
             printJson(new StartupComplete());
             consumer.subscribe(Collections.singletonList(topic), this);
 
-            while (!isFinished()) {
-                ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(Long.MAX_VALUE));
+            while (true) {
+                ConsumerRecords<String, String> records = consumer.poll(Long.MAX_VALUE);
                 Map<TopicPartition, OffsetAndMetadata> offsets = onRecordsReceived(records);
 
                 if (!useAutoCommit) {
@@ -246,10 +232,6 @@ public class VerifiableConsumer implements Closeable, OffsetCommitCallback, Cons
             }
         } catch (WakeupException e) {
             // ignore, we are closing
-            log.trace("Caught WakeupException because consumer is shutdown, ignore and terminate.", e);
-        } catch (Throwable t) {
-            // Log the error so it goes to the service log and not stdout
-            log.error("Error during processing, terminating consumer process: ", t);
         } finally {
             consumer.close();
             printJson(new ShutdownComplete());
@@ -276,7 +258,7 @@ public class VerifiableConsumer implements Closeable, OffsetCommitCallback, Cons
     }
 
     @JsonPropertyOrder({ "timestamp", "name" })
-    private abstract static class ConsumerEvent {
+    private static abstract class ConsumerEvent {
         private final long timestamp = System.currentTimeMillis();
 
         @JsonProperty
@@ -509,16 +491,14 @@ public class VerifiableConsumer implements Closeable, OffsetCommitCallback, Cons
                 .newArgumentParser("verifiable-consumer")
                 .defaultHelp(true)
                 .description("This tool consumes messages from a specific topic and emits consumer events (e.g. group rebalances, received messages, and offsets committed) as JSON objects to STDOUT.");
-        MutuallyExclusiveGroup connectionGroup = parser.addMutuallyExclusiveGroup("Connection Group")
-                .description("Group of arguments for connection to brokers")
-                .required(true);
-        connectionGroup.addArgument("--bootstrap-server")
+
+        parser.addArgument("--broker-list")
                 .action(store())
                 .required(true)
                 .type(String.class)
                 .metavar("HOST1:PORT1[,HOST2:PORT2[...]]")
-                .dest("bootstrapServer")
-                .help("The server(s) to connect to. Comma-separated list of Kafka brokers in the form HOST1:PORT1,HOST2:PORT2,...");
+                .dest("brokerList")
+                .help("Comma-separated list of Kafka brokers in the form HOST1:PORT1,HOST2:PORT2,...");
 
         parser.addArgument("--topic")
                 .action(store())
@@ -527,25 +507,6 @@ public class VerifiableConsumer implements Closeable, OffsetCommitCallback, Cons
                 .metavar("TOPIC")
                 .help("Consumes messages from this topic.");
 
-        parser.addArgument("--group-protocol")
-                .action(store())
-                .required(false)
-                .type(String.class)
-                .setDefault(ConsumerConfig.DEFAULT_GROUP_PROTOCOL)
-                .metavar("GROUP_PROTOCOL")
-                .dest("groupProtocol")
-                .help(String.format("Group protocol (must be one of %s)", Arrays.stream(GroupProtocol.values())
-                        .map(Object::toString).collect(Collectors.joining(", "))));
-
-        parser.addArgument("--group-remote-assignor")
-                .action(store())
-                .required(false)
-                .type(String.class)
-                .setDefault(ConsumerConfig.DEFAULT_GROUP_REMOTE_ASSIGNOR)
-                .metavar("GROUP_REMOTE_ASSIGNOR")
-                .dest("groupRemoteAssignor")
-                .help(String.format("Group remote assignor; only used if the group protocol is %s", GroupProtocol.CONSUMER.name()));
-
         parser.addArgument("--group-id")
                 .action(store())
                 .required(true)
@@ -553,14 +514,6 @@ public class VerifiableConsumer implements Closeable, OffsetCommitCallback, Cons
                 .metavar("GROUP_ID")
                 .dest("groupId")
                 .help("The groupId shared among members of the consumer group");
-
-        parser.addArgument("--group-instance-id")
-                .action(store())
-                .required(false)
-                .type(String.class)
-                .metavar("GROUP_INSTANCE_ID")
-                .dest("groupInstanceId")
-                .help("A unique identifier of the consumer instance");
 
         parser.addArgument("--max-messages")
                 .action(store())
@@ -574,10 +527,11 @@ public class VerifiableConsumer implements Closeable, OffsetCommitCallback, Cons
         parser.addArgument("--session-timeout")
                 .action(store())
                 .required(false)
+                .setDefault(30000)
                 .type(Integer.class)
                 .metavar("TIMEOUT_MS")
                 .dest("sessionTimeout")
-                .help("Set the consumer's session timeout, note that this configuration is not supported when group protocol is consumer");
+                .help("Set the consumer's session timeout");
 
         parser.addArgument("--verbose")
                 .action(storeTrue())
@@ -606,7 +560,7 @@ public class VerifiableConsumer implements Closeable, OffsetCommitCallback, Cons
                 .setDefault(RangeAssignor.class.getName())
                 .type(String.class)
                 .dest("assignmentStrategy")
-                .help(String.format("Set assignment strategy (e.g. %s); only used if the group protocol is %s", RoundRobinAssignor.class.getName(), GroupProtocol.CLASSIC.name()));
+                .help("Set assignment strategy (e.g. " + RoundRobinAssignor.class.getName() + ")");
 
         parser.addArgument("--consumer.config")
                 .action(store())
@@ -621,9 +575,11 @@ public class VerifiableConsumer implements Closeable, OffsetCommitCallback, Cons
     public static VerifiableConsumer createFromArgs(ArgumentParser parser, String[] args) throws ArgumentParserException {
         Namespace res = parser.parseArgs(args);
 
+        String topic = res.getString("topic");
         boolean useAutoCommit = res.getBoolean("useAutoCommit");
+        int maxMessages = res.getInt("maxMessages");
+        boolean verbose = res.getBoolean("verbose");
         String configFile = res.getString("consumer.config");
-        String brokerHostandPort = res.getString("bootstrapServer");
 
         Properties consumerProps = new Properties();
         if (configFile != null) {
@@ -634,47 +590,15 @@ public class VerifiableConsumer implements Closeable, OffsetCommitCallback, Cons
             }
         }
 
-        GroupProtocol groupProtocol = GroupProtocol.of(res.getString("groupProtocol"));
-        consumerProps.put(ConsumerConfig.GROUP_PROTOCOL_CONFIG, groupProtocol.name());
-
-        // 3.7.0 includes support for KIP-848 which introduced a new implementation of the consumer group protocol.
-        // The two implementations use slightly different configuration, hence these arguments are conditional.
-        //
-        // See the Python class/method VerifiableConsumer.start_cmd() in verifiable_consumer.py for how the
-        // command line arguments are passed in by the system test framework.
-        if (groupProtocol == GroupProtocol.CONSUMER) {
-            String groupRemoteAssignor = res.getString("groupRemoteAssignor");
-
-            if (groupRemoteAssignor != null)
-                consumerProps.put(ConsumerConfig.GROUP_REMOTE_ASSIGNOR_CONFIG, groupRemoteAssignor);
-        } else {
-            // This means we're using the CLASSIC consumer group protocol.
-            consumerProps.put(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, res.getString("assignmentStrategy"));
-        }
-
-        Integer sessionTimeout = res.getInt("sessionTimeout");
-        if (sessionTimeout != null) {
-            consumerProps.put(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, Integer.toString(sessionTimeout));
-        }
-
         consumerProps.put(ConsumerConfig.GROUP_ID_CONFIG, res.getString("groupId"));
-
-        String groupInstanceId = res.getString("groupInstanceId");
-        if (groupInstanceId != null) {
-            consumerProps.put(ConsumerConfig.GROUP_INSTANCE_ID_CONFIG, groupInstanceId);
-        }
-
-        consumerProps.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, brokerHostandPort);
-
+        consumerProps.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, res.getString("brokerList"));
         consumerProps.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, useAutoCommit);
         consumerProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, res.getString("resetPolicy"));
+        consumerProps.put(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, Integer.toString(res.getInt("sessionTimeout")));
+        consumerProps.put(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, res.getString("assignmentStrategy"));
 
         StringDeserializer deserializer = new StringDeserializer();
         KafkaConsumer<String, String> consumer = new KafkaConsumer<>(consumerProps, deserializer, deserializer);
-
-        String topic = res.getString("topic");
-        int maxMessages = res.getInt("maxMessages");
-        boolean verbose = res.getBoolean("verbose");
 
         return new VerifiableConsumer(
                 consumer,
@@ -690,19 +614,22 @@ public class VerifiableConsumer implements Closeable, OffsetCommitCallback, Cons
         ArgumentParser parser = argParser();
         if (args.length == 0) {
             parser.printHelp();
-            // Can't use `Exit.exit` here because it didn't exist until 0.11.0.0.
-            System.exit(0);
+            Exit.exit(0);
         }
+
         try {
             final VerifiableConsumer consumer = createFromArgs(parser, args);
-            // Can't use `Exit.addShutdownHook` here because it didn't exist until 2.5.0.
-            Runtime.getRuntime().addShutdownHook(new Thread(consumer::close, "verifiable-consumer-shutdown-hook"));
+            Runtime.getRuntime().addShutdownHook(new Thread() {
+                @Override
+                public void run() {
+                    consumer.close();
+                }
+            });
 
             consumer.run();
         } catch (ArgumentParserException e) {
             parser.handleError(e);
-            // Can't use `Exit.exit` here because it didn't exist until 0.11.0.0.
-            System.exit(1);
+            Exit.exit(1);
         }
     }
 

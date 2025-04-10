@@ -17,49 +17,30 @@
 package org.apache.kafka.streams.kstream.internals;
 
 import org.apache.kafka.common.utils.Bytes;
-import org.apache.kafka.streams.state.DslKeyValueParams;
 import org.apache.kafka.streams.state.KeyValueBytesStoreSupplier;
 import org.apache.kafka.streams.state.KeyValueStore;
 import org.apache.kafka.streams.state.StoreBuilder;
 import org.apache.kafka.streams.state.Stores;
-import org.apache.kafka.streams.state.VersionedBytesStoreSupplier;
-import org.apache.kafka.streams.state.internals.TimestampedKeyValueStoreBuilder;
-import org.apache.kafka.streams.state.internals.VersionedKeyValueStoreBuilder;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+public class KeyValueStoreMaterializer<K, V> {
+    private final MaterializedInternal<K, V, KeyValueStore<Bytes, byte[]>> materialized;
 
-/**
- * Materializes a key-value store as either a {@link TimestampedKeyValueStoreBuilder} or a
- * {@link VersionedKeyValueStoreBuilder} depending on whether the store is versioned or not.
- */
-public class KeyValueStoreMaterializer<K, V> extends MaterializedStoreFactory<K, V, KeyValueStore<Bytes, byte[]>> {
-    private static final Logger LOG = LoggerFactory.getLogger(KeyValueStoreMaterializer.class);
-
-    public KeyValueStoreMaterializer(
-            final MaterializedInternal<K, V, KeyValueStore<Bytes, byte[]>> materialized
-    ) {
-        super(materialized);
+    public KeyValueStoreMaterializer(final MaterializedInternal<K, V, KeyValueStore<Bytes, byte[]>> materialized) {
+        this.materialized = materialized;
     }
 
-    @Override
-    public StoreBuilder<?> builder() {
-        final KeyValueBytesStoreSupplier supplier = materialized.storeSupplier() == null
-                ? dslStoreSuppliers().keyValueStore(new DslKeyValueParams(materialized.storeName(), true))
-                : (KeyValueBytesStoreSupplier) materialized.storeSupplier();
-
-        final StoreBuilder<?> builder;
-        if (supplier instanceof VersionedBytesStoreSupplier) {
-            builder = Stores.versionedKeyValueStoreBuilder(
-                    (VersionedBytesStoreSupplier) supplier,
-                    materialized.keySerde(),
-                    materialized.valueSerde());
-        } else {
-            builder = Stores.timestampedKeyValueStoreBuilder(
-                    supplier,
-                    materialized.keySerde(),
-                    materialized.valueSerde());
+    /**
+     * @return  StoreBuilder
+     */
+    public StoreBuilder<KeyValueStore<K, V>> materialize() {
+        KeyValueBytesStoreSupplier supplier = (KeyValueBytesStoreSupplier) materialized.storeSupplier();
+        if (supplier == null) {
+            final String name = materialized.storeName();
+            supplier = Stores.persistentKeyValueStore(name);
         }
+        final StoreBuilder<KeyValueStore<K, V>> builder = Stores.keyValueStoreBuilder(supplier,
+                                                                                      materialized.keySerde(),
+                                                                                      materialized.valueSerde());
 
         if (materialized.loggingEnabled()) {
             builder.withLoggingEnabled(materialized.logConfig());
@@ -68,40 +49,8 @@ public class KeyValueStoreMaterializer<K, V> extends MaterializedStoreFactory<K,
         }
 
         if (materialized.cachingEnabled()) {
-            if (!(builder instanceof VersionedKeyValueStoreBuilder)) {
-                builder.withCachingEnabled();
-            } else {
-                LOG.info("Not enabling caching for store '{}' as versioned stores do not support caching.", supplier.name());
-            }
+            builder.withCachingEnabled();
         }
-
-
         return builder;
     }
-
-    @Override
-    public long retentionPeriod() {
-        throw new IllegalStateException(
-                "retentionPeriod is not supported when not a window store");
-    }
-
-    @Override
-    public long historyRetention() {
-        if (!(materialized.storeSupplier() instanceof VersionedBytesStoreSupplier)) {
-            throw new IllegalStateException(
-                    "historyRetention is not supported when not a versioned store");
-        }
-        return ((VersionedBytesStoreSupplier) materialized.storeSupplier()).historyRetentionMs();
-    }
-
-    @Override
-    public boolean isWindowStore() {
-        return false;
-    }
-
-    @Override
-    public boolean isVersionedStore() {
-        return materialized.storeSupplier() instanceof VersionedBytesStoreSupplier;
-    }
-
 }

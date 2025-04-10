@@ -19,108 +19,88 @@ package kafka.server
 
 import java.util
 import java.util.Properties
-import org.apache.kafka.common.config.TopicConfig
+
+import kafka.log.LogConfig
+import kafka.utils.TestUtils
 import org.apache.kafka.common.errors.PolicyViolationException
-import org.apache.kafka.common.internals.Topic
 import org.apache.kafka.common.protocol.Errors
-import org.apache.kafka.server.config.ServerLogConfigs.CREATE_TOPIC_POLICY_CLASS_NAME_CONFIG
+import org.apache.kafka.common.requests.CreateTopicsRequest
 import org.apache.kafka.server.policy.CreateTopicPolicy
 import org.apache.kafka.server.policy.CreateTopicPolicy.RequestMetadata
-import org.junit.jupiter.api.TestInfo
-import org.junit.jupiter.params.ParameterizedTest
-import org.junit.jupiter.params.provider.ValueSource
+import org.junit.Test
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 
 class CreateTopicsRequestWithPolicyTest extends AbstractCreateTopicsRequestTest {
   import CreateTopicsRequestWithPolicyTest._
 
-  override def brokerPropertyOverrides(properties: Properties): Unit = {
-    super.brokerPropertyOverrides(properties)
-    properties.put(CREATE_TOPIC_POLICY_CLASS_NAME_CONFIG, classOf[Policy].getName)
+  override def propertyOverrides(properties: Properties): Unit = {
+    super.propertyOverrides(properties)
+    properties.put(KafkaConfig.CreateTopicPolicyClassNameProp, classOf[Policy].getName)
   }
 
-  override def kraftControllerConfigs(testInfo: TestInfo): Seq[Properties] = {
-    val properties = new Properties()
-    properties.put(CREATE_TOPIC_POLICY_CLASS_NAME_CONFIG, classOf[Policy].getName)
-    Seq(properties)
+  @Test
+  def testValidCreateTopicsRequests() {
+    val timeout = 10000
+
+    validateValidCreateTopicsRequests(new CreateTopicsRequest.Builder(
+      Map("topic1" -> new CreateTopicsRequest.TopicDetails(5, 1.toShort)).asJava, timeout).build())
+
+    validateValidCreateTopicsRequests(new CreateTopicsRequest.Builder(
+      Map("topic2" -> new CreateTopicsRequest.TopicDetails(5, 3.toShort)).asJava, timeout, true).build())
+
+    val configs = Map(LogConfig.RetentionMsProp -> 4999.toString)
+    validateValidCreateTopicsRequests(new CreateTopicsRequest.Builder(
+      Map("topic3" -> new CreateTopicsRequest.TopicDetails(11, 2.toShort, configs.asJava)).asJava, timeout, true).build())
+
+    val assignments = replicaAssignmentToJava(Map(0 -> List(1, 0), 1 -> List(0, 1)))
+    validateValidCreateTopicsRequests(new CreateTopicsRequest.Builder(
+      Map("topic4" -> new CreateTopicsRequest.TopicDetails(assignments)).asJava, timeout).build())
   }
 
-  @ParameterizedTest
-  @ValueSource(strings = Array("kraft"))
-  def testValidCreateTopicsRequests(quorum: String): Unit = {
-    validateValidCreateTopicsRequests(topicsReq(Seq(topicReq("topic1",
-      numPartitions = 5))))
-
-    validateValidCreateTopicsRequests(topicsReq(Seq(topicReq("topic2",
-      numPartitions = 5, replicationFactor = 3)),
-      validateOnly = true))
-
-    validateValidCreateTopicsRequests(topicsReq(Seq(topicReq("topic3",
-      numPartitions = 11, replicationFactor = 2,
-      config = Map(TopicConfig.RETENTION_MS_CONFIG -> 4999.toString))),
-      validateOnly = true))
-
-    validateValidCreateTopicsRequests(topicsReq(Seq(topicReq("topic4",
-      assignment = Map(0 -> List(1, 0), 1 -> List(0, 1))))))
-  }
-
-  @ParameterizedTest
-  @ValueSource(strings = Array("kraft"))
-  def testErrorCreateTopicsRequests(quorum: String): Unit = {
+  @Test
+  def testErrorCreateTopicsRequests() {
+    val timeout = 10000
     val existingTopic = "existing-topic"
-    createTopic(existingTopic, 5)
+    TestUtils.createTopic(zkUtils, existingTopic, 1, 1, servers)
 
     // Policy violations
-    validateErrorCreateTopicsRequests(topicsReq(Seq(topicReq("policy-topic1",
-      numPartitions = 4, replicationFactor = 1))),
+    validateErrorCreateTopicsRequests(new CreateTopicsRequest.Builder(
+      Map("policy-topic1" -> new CreateTopicsRequest.TopicDetails(4, 1.toShort)).asJava, timeout).build(),
       Map("policy-topic1" -> error(Errors.POLICY_VIOLATION, Some("Topics should have at least 5 partitions, received 4"))))
 
-    validateErrorCreateTopicsRequests(topicsReq(Seq(topicReq("policy-topic2",
-      numPartitions = 4, replicationFactor = 3)), validateOnly = true),
+    validateErrorCreateTopicsRequests(new CreateTopicsRequest.Builder(
+      Map("policy-topic2" -> new CreateTopicsRequest.TopicDetails(4, 3.toShort)).asJava, timeout, true).build(),
       Map("policy-topic2" -> error(Errors.POLICY_VIOLATION, Some("Topics should have at least 5 partitions, received 4"))))
 
-    validateErrorCreateTopicsRequests(topicsReq(Seq(topicReq("policy-topic3",
-      numPartitions = 11, replicationFactor = 2,
-      config = Map(TopicConfig.RETENTION_MS_CONFIG -> 5001.toString))), validateOnly = true),
-      Map("policy-topic3" -> error(Errors.POLICY_VIOLATION,
-        Some("RetentionMs should be less than 5000ms if replicationFactor > 5"))))
+    val configs = Map(LogConfig.RetentionMsProp -> 5001.toString)
+    validateErrorCreateTopicsRequests(new CreateTopicsRequest.Builder(
+      Map("policy-topic3" -> new CreateTopicsRequest.TopicDetails(11, 2.toShort, configs.asJava)).asJava, timeout, true).build(),
+      Map("policy-topic3" -> error(Errors.POLICY_VIOLATION, Some("RetentionMs should be less than 5000ms if replicationFactor > 5"))))
 
-    validateErrorCreateTopicsRequests(topicsReq(Seq(topicReq("policy-topic4",
-      numPartitions = 11, replicationFactor = 3,
-      config = Map(TopicConfig.RETENTION_MS_CONFIG -> 5001.toString))), validateOnly = true),
-      Map("policy-topic4" -> error(Errors.POLICY_VIOLATION,
-        Some("RetentionMs should be less than 5000ms if replicationFactor > 5"))))
+    validateErrorCreateTopicsRequests(new CreateTopicsRequest.Builder(
+      Map("policy-topic4" -> new CreateTopicsRequest.TopicDetails(11, 3.toShort, Map.empty.asJava)).asJava, timeout, true).build(),
+      Map("policy-topic4" -> error(Errors.POLICY_VIOLATION, Some("RetentionMs should be less than 5000ms if replicationFactor > 5"))))
 
-    validateErrorCreateTopicsRequests(topicsReq(Seq(topicReq("policy-topic5",
-      assignment = Map(0 -> List(1), 1 -> List(0)),
-      config = Map(TopicConfig.RETENTION_MS_CONFIG -> 5001.toString))), validateOnly = true),
+    val assignments = replicaAssignmentToJava(Map(0 -> List(1), 1 -> List(0)))
+    validateErrorCreateTopicsRequests(new CreateTopicsRequest.Builder(
+      Map("policy-topic5" -> new CreateTopicsRequest.TopicDetails(assignments)).asJava, timeout).build(),
       Map("policy-topic5" -> error(Errors.POLICY_VIOLATION,
         Some("Topic partitions should have at least 2 partitions, received 1 for partition 0"))))
 
     // Check that basic errors still work
-    validateErrorCreateTopicsRequests(topicsReq(Seq(topicReq(existingTopic,
-      numPartitions = 5, replicationFactor = 1))),
-      Map(existingTopic -> error(Errors.TOPIC_ALREADY_EXISTS,
-        Some("Topic 'existing-topic' already exists."))))
+    validateErrorCreateTopicsRequests(new CreateTopicsRequest.Builder(
+      Map(existingTopic -> new CreateTopicsRequest.TopicDetails(5, 1.toShort)).asJava, timeout).build(),
+      Map(existingTopic -> error(Errors.TOPIC_ALREADY_EXISTS, Some("Topic 'existing-topic' already exists."))))
 
-    var errorMsg = "Unable to replicate the partition 4 time(s): The target replication factor of 4 cannot be reached because only 3 broker(s) are registered."
-    validateErrorCreateTopicsRequests(topicsReq(Seq(topicReq("error-replication",
-      numPartitions = 10, replicationFactor = brokerCount + 1)), validateOnly = true),
+    validateErrorCreateTopicsRequests(new CreateTopicsRequest.Builder(
+      Map("error-replication" -> new CreateTopicsRequest.TopicDetails(10, (numBrokers + 1).toShort)).asJava, timeout, true).build(),
       Map("error-replication" -> error(Errors.INVALID_REPLICATION_FACTOR,
-        Some(errorMsg))))
+        Some("Replication factor: 4 larger than available brokers: 3."))))
 
-    errorMsg = "Replication factor must be larger than 0, or -1 to use the default value."
-    validateErrorCreateTopicsRequests(topicsReq(Seq(topicReq("error-replication2",
-      numPartitions = 10, replicationFactor = -2)), validateOnly = true),
-      Map("error-replication2" -> error(Errors.INVALID_REPLICATION_FACTOR,
-        Some(errorMsg))))
-
-    errorMsg = "Number of partitions was set to an invalid non-positive value."
-    validateErrorCreateTopicsRequests(topicsReq(Seq(topicReq("error-partitions",
-      numPartitions = -2, replicationFactor = 1)), validateOnly = true),
-      Map("error-partitions" -> error(Errors.INVALID_PARTITIONS,
-        Some(errorMsg))))
+    validateErrorCreateTopicsRequests(new CreateTopicsRequest.Builder(
+      Map("error-replication2" -> new CreateTopicsRequest.TopicDetails(10, -1: Short)).asJava, timeout, true).build(),
+      Map("error-replication2" -> error(Errors.INVALID_REPLICATION_FACTOR, Some("Replication factor must be larger than 0."))))
   }
 
 }
@@ -137,24 +117,20 @@ object CreateTopicsRequestWithPolicyTest {
     }
 
     def validate(requestMetadata: RequestMetadata): Unit = {
-      if (Topic.isInternal(requestMetadata.topic())) {
-        // Do not verify internal topics
-        return
-      }
       require(!closed, "Policy should not be closed")
-      require(configs.nonEmpty, "configure should have been called with non empty configs")
+      require(!configs.isEmpty, "configure should have been called with non empty configs")
 
       import requestMetadata._
       if (numPartitions != null || replicationFactor != null) {
         require(numPartitions != null, s"numPartitions should not be null, but it is $numPartitions")
         require(replicationFactor != null, s"replicationFactor should not be null, but it is $replicationFactor")
-        require(replicasAssignments == null, s"replicaAssignments should be null, but it is $replicasAssignments")
+        require(replicasAssignments == null, s"replicaAssigments should be null, but it is $replicasAssignments")
 
         if (numPartitions < 5)
           throw new PolicyViolationException(s"Topics should have at least 5 partitions, received $numPartitions")
 
         if (numPartitions > 10) {
-          if (requestMetadata.configs.asScala.get(TopicConfig.RETENTION_MS_CONFIG).fold(true)(_.toInt > 5000))
+          if (requestMetadata.configs.asScala.get(LogConfig.RetentionMsProp).fold(true)(_.toInt > 5000))
             throw new PolicyViolationException("RetentionMs should be less than 5000ms if replicationFactor > 5")
         } else
           require(requestMetadata.configs.isEmpty, s"Topic configs should be empty, but it is ${requestMetadata.configs}")
@@ -162,9 +138,9 @@ object CreateTopicsRequestWithPolicyTest {
       } else {
         require(numPartitions == null, s"numPartitions should be null, but it is $numPartitions")
         require(replicationFactor == null, s"replicationFactor should be null, but it is $replicationFactor")
-        require(replicasAssignments != null, s"replicaAssignments should not be null, but it is $replicasAssignments")
+        require(replicasAssignments != null, s"replicaAssigments should not be null, but it is $replicasAssignments")
 
-        replicasAssignments.asScala.toSeq.sortBy { case (tp, _) => tp }.foreach { case (partitionId, assignment) =>
+        replicasAssignments.asScala.foreach { case (partitionId, assignment) =>
           if (assignment.size < 2)
             throw new PolicyViolationException("Topic partitions should have at least 2 partitions, received " +
               s"${assignment.size} for partition $partitionId")

@@ -18,7 +18,6 @@ package org.apache.kafka.connect.storage;
 
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.util.Callback;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -27,13 +26,10 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.Future;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 /**
  * <p>
- * OffsetStorageWriter is a buffered writer that wraps the simple {@link OffsetBackingStore} interface.
+ * OffsetStorageWriter is a buffered writer that wraps the simple OffsetBackingStore interface.
  * It maintains a copy of the key-value data in memory and buffers writes. It allows you to take
  * a snapshot, which can then be asynchronously flushed to the backing store while new writes
  * continue to be processed. This allows Kafka Connect to process offset commits in the background
@@ -41,8 +37,8 @@ import java.util.concurrent.TimeoutException;
  * </p>
  * <p>
  * Connect uses an OffsetStorage implementation to save state about the current progress of
- * source (import to Kafka) connectors, which may have many input partitions and "offsets" may not be as
- * simple as they are for Kafka partitions or files. Offset storage is not required for sink connectors
+ * source (import to Kafka) jobs, which may have many input partitions and "offsets" may not be as
+ * simple as they are for Kafka partitions or files. Offset storage is not required for sink jobs
  * because they can use Kafka's native offset storage (or the sink data store can handle offset
  * storage to achieve exactly once semantics).
  * </p>
@@ -77,7 +73,6 @@ public class OffsetStorageWriter {
     private Map<Map<String, Object>, Map<String, Object>> data = new HashMap<>();
 
     private Map<Map<String, Object>, Map<String, Object>> toFlush = null;
-    private final Semaphore flushInProgress = new Semaphore(1);
     // Unique ID for each flush request to handle callbacks after timeouts
     private long currentFlushId = 0;
 
@@ -94,7 +89,6 @@ public class OffsetStorageWriter {
      * @param partition the partition to store an offset for
      * @param offset the offset
      */
-    @SuppressWarnings("unchecked")
     public synchronized void offset(Map<String, ?> partition, Map<String, ?> offset) {
         data.put((Map<String, Object>) partition, (Map<String, Object>) offset);
     }
@@ -105,50 +99,24 @@ public class OffsetStorageWriter {
 
     /**
      * Performs the first step of a flush operation, snapshotting the current state. This does not
-     * actually initiate the flush with the underlying storage. Ensures that any previous flush operations
-     * have finished before beginning a new flush.
+     * actually initiate the flush with the underlying storage.
      *
      * @return true if a flush was initiated, false if no data was available
-     * @throws ConnectException if the previous flush is not complete before this method is called
      */
-    public boolean beginFlush() {
-        try {
-            return beginFlush(0, TimeUnit.NANOSECONDS);
-        } catch (InterruptedException | TimeoutException e) {
-            log.error("Invalid call to OffsetStorageWriter beginFlush() while already flushing, the "
+    public synchronized boolean beginFlush() {
+        if (flushing()) {
+            log.error("Invalid call to OffsetStorageWriter flush() while already flushing, the "
                     + "framework should not allow this");
             throw new ConnectException("OffsetStorageWriter is already flushing");
         }
-    }
 
-    /**
-     * Performs the first step of a flush operation, snapshotting the current state. This does not
-     * actually initiate the flush with the underlying storage. Ensures that any previous flush operations
-     * have finished before beginning a new flush.
-     * <p>If and only if this method returns true, the caller must call {@link #doFlush(Callback)}
-     * or {@link #cancelFlush()} to finish the flush operation and allow later calls to complete.
-     *
-     * @param timeout A maximum duration to wait for previous flushes to finish before giving up on waiting
-     * @param timeUnit Units of the timeout argument
-     * @return true if a flush was initiated, false if no data was available
-     * @throws InterruptedException if this thread was interrupted while waiting for the previous flush to complete
-     * @throws TimeoutException if the {@code timeout} elapses before previous flushes are complete.
-     */
-    public boolean beginFlush(long timeout, TimeUnit timeUnit) throws InterruptedException, TimeoutException {
-        if (flushInProgress.tryAcquire(Math.max(0, timeout), timeUnit)) {
-            synchronized (this) {
-                if (data.isEmpty()) {
-                    flushInProgress.release();
-                    return false;
-                } else {
-                    toFlush = data;
-                    data = new HashMap<>();
-                    return true;
-                }
-            }
-        } else {
-            throw new TimeoutException("Timed out waiting for previous flush to finish");
-        }
+        if (data.isEmpty())
+            return false;
+
+        assert !flushing();
+        toFlush = data;
+        data = new HashMap<>();
+        return true;
     }
 
     /**
@@ -157,7 +125,7 @@ public class OffsetStorageWriter {
      * writes the data to the backing store. If no offsets need to be written, the callback is
      * still invoked, but no Future is returned.
      *
-     * @return a Future, or null if there are no offsets to commit
+     * @return a Future, or null if there are no offsets to commitOffsets
      */
     public Future<Void> doFlush(final Callback<Void> callback) {
 
@@ -197,10 +165,13 @@ public class OffsetStorageWriter {
             log.debug("Submitting {} entries to backing store. The offsets are: {}", offsetsSerialized.size(), toFlush);
         }
 
-        return backingStore.set(offsetsSerialized, (error, result) -> {
-            boolean isCurrent = handleFinishWrite(flushId, error, result);
-            if (isCurrent && callback != null) {
-                callback.onCompletion(error, result);
+        return backingStore.set(offsetsSerialized, new Callback<Void>() {
+            @Override
+            public void onCompletion(Throwable error, Void result) {
+                boolean isCurrent = handleFinishWrite(flushId, error, result);
+                if (isCurrent && callback != null) {
+                    callback.onCompletion(error, result);
+                }
             }
         });
     }
@@ -218,7 +189,6 @@ public class OffsetStorageWriter {
             toFlush.putAll(data);
             data = toFlush;
             currentFlushId++;
-            flushInProgress.release();
             toFlush = null;
         }
     }
@@ -237,7 +207,6 @@ public class OffsetStorageWriter {
             cancelFlush();
         } else {
             currentFlushId++;
-            flushInProgress.release();
             toFlush = null;
         }
         return true;

@@ -16,13 +16,10 @@
  */
 package org.apache.kafka.common.record;
 
-import org.apache.kafka.common.InvalidRecordException;
 import org.apache.kafka.common.KafkaException;
-import org.apache.kafka.common.compress.Compression;
 import org.apache.kafka.common.errors.CorruptRecordException;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.utils.AbstractIterator;
-import org.apache.kafka.common.utils.BufferSupplier;
 import org.apache.kafka.common.utils.ByteBufferOutputStream;
 import org.apache.kafka.common.utils.ByteUtils;
 import org.apache.kafka.common.utils.CloseableIterator;
@@ -32,11 +29,10 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.util.ArrayDeque;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
-import java.util.Objects;
-import java.util.OptionalLong;
 
 import static org.apache.kafka.common.record.Records.LOG_OVERHEAD;
 import static org.apache.kafka.common.record.Records.OFFSET_OFFSET;
@@ -112,6 +108,11 @@ public abstract class AbstractLegacyRecordBatch extends AbstractRecordBatch impl
     @Override
     public boolean hasTimestampType(TimestampType timestampType) {
         return outerRecord().timestampType() == timestampType;
+    }
+
+    @Override
+    public Long checksumOrNull() {
+        return checksum();
     }
 
     @Override
@@ -215,11 +216,6 @@ public abstract class AbstractLegacyRecordBatch extends AbstractRecordBatch impl
         return false;
     }
 
-    @Override
-    public OptionalLong deleteHorizonMs() {
-        return OptionalLong.empty();
-    }
-
     /**
      * Get an iterator for the nested entries contained within this batch. Note that
      * if the batch is not compressed, then this method will return an iterator over the
@@ -231,11 +227,11 @@ public abstract class AbstractLegacyRecordBatch extends AbstractRecordBatch impl
         return iterator(BufferSupplier.NO_CACHING);
     }
 
-    CloseableIterator<Record> iterator(BufferSupplier bufferSupplier) {
+    private CloseableIterator<Record> iterator(BufferSupplier bufferSupplier) {
         if (isCompressed())
             return new DeepRecordsIterator(this, false, Integer.MAX_VALUE, bufferSupplier);
 
-        return new CloseableIterator<>() {
+        return new CloseableIterator<Record>() {
             private boolean hasNext = true;
 
             @Override
@@ -279,7 +275,7 @@ public abstract class AbstractLegacyRecordBatch extends AbstractRecordBatch impl
 
     private static final class DataLogInputStream implements LogInputStream<AbstractLegacyRecordBatch> {
         private final InputStream stream;
-        private final int maxMessageSize;
+        protected final int maxMessageSize;
         private final ByteBuffer offsetAndSizeBuffer;
 
         DataLogInputStream(InputStream stream, int maxMessageSize) {
@@ -326,14 +322,12 @@ public abstract class AbstractLegacyRecordBatch extends AbstractRecordBatch impl
                 throw new InvalidRecordException("Invalid wrapper magic found in legacy deep record iterator " + wrapperMagic);
 
             CompressionType compressionType = wrapperRecord.compressionType();
-            if (compressionType == CompressionType.ZSTD)
-                throw new InvalidRecordException("Invalid wrapper compressionType found in legacy deep record iterator " + wrapperMagic);
             ByteBuffer wrapperValue = wrapperRecord.value();
             if (wrapperValue == null)
                 throw new InvalidRecordException("Found invalid compressed record set with null value (magic = " +
                         wrapperMagic + ")");
 
-            InputStream stream = Compression.of(compressionType).build().wrapForInput(wrapperValue, wrapperRecord.magic(), bufferSupplier);
+            InputStream stream = compressionType.wrapForInput(wrapperValue, wrapperRecord.magic(), bufferSupplier);
             LogInputStream<AbstractLegacyRecordBatch> logStream = new DataLogInputStream(stream, maxMessageSize);
 
             long lastOffsetFromWrapper = wrapperEntry.lastOffset();
@@ -444,13 +438,13 @@ public abstract class AbstractLegacyRecordBatch extends AbstractRecordBatch impl
             BasicLegacyRecordBatch that = (BasicLegacyRecordBatch) o;
 
             return offset == that.offset &&
-                Objects.equals(record, that.record);
+                    (record != null ? record.equals(that.record) : that.record == null);
         }
 
         @Override
         public int hashCode() {
             int result = record != null ? record.hashCode() : 0;
-            result = 31 * result + Long.hashCode(offset);
+            result = 31 * result + (int) (offset ^ (offset >>> 32));
             return result;
         }
     }
@@ -507,16 +501,6 @@ public abstract class AbstractLegacyRecordBatch extends AbstractRecordBatch impl
             ByteUtils.writeUnsignedInt(buffer, LOG_OVERHEAD + LegacyRecord.CRC_OFFSET, crc);
         }
 
-        /**
-         * LegacyRecordBatch does not implement this iterator and would hence fallback to the normal iterator.
-         *
-         * @return An iterator over the records contained within this batch
-         */
-        @Override
-        public CloseableIterator<Record> skipKeyValueIterator(BufferSupplier bufferSupplier) {
-            return CloseableIterator.wrap(iterator(bufferSupplier));
-        }
-
         @Override
         public void writeTo(ByteBufferOutputStream outputStream) {
             outputStream.write(buffer.duplicate());
@@ -531,7 +515,7 @@ public abstract class AbstractLegacyRecordBatch extends AbstractRecordBatch impl
 
             ByteBufferLegacyRecordBatch that = (ByteBufferLegacyRecordBatch) o;
 
-            return Objects.equals(buffer, that.buffer);
+            return buffer != null ? buffer.equals(that.buffer) : that.buffer == null;
         }
 
         @Override
@@ -544,10 +528,10 @@ public abstract class AbstractLegacyRecordBatch extends AbstractRecordBatch impl
 
         LegacyFileChannelRecordBatch(long offset,
                                      byte magic,
-                                     FileRecords fileRecords,
+                                     FileChannel channel,
                                      int position,
                                      int batchSize) {
-            super(offset, magic, fileRecords, position, batchSize);
+            super(offset, magic, channel, position, batchSize);
         }
 
         @Override
@@ -558,11 +542,6 @@ public abstract class AbstractLegacyRecordBatch extends AbstractRecordBatch impl
         @Override
         public long baseOffset() {
             return loadFullBatch().baseOffset();
-        }
-
-        @Override
-        public OptionalLong deleteHorizonMs() {
-            return OptionalLong.empty();
         }
 
         @Override

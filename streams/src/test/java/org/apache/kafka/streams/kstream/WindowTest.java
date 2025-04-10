@@ -16,11 +16,10 @@
  */
 package org.apache.kafka.streams.kstream;
 
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
 
 public class WindowTest {
 
@@ -48,14 +47,14 @@ public class WindowTest {
 
     private final TestWindow window = new TestWindow(5, 10);
 
-    @Test
+    @Test(expected = IllegalArgumentException.class)
     public void shouldThrowIfStartIsNegative() {
-        assertThrows(IllegalArgumentException.class, () -> new TestWindow(-1, 0));
+        new TestWindow(-1, 0);
     }
 
-    @Test
+    @Test(expected = IllegalArgumentException.class)
     public void shouldThrowIfEndIsSmallerThanStart() {
-        assertThrows(IllegalArgumentException.class, () -> new TestWindow(1, 0));
+        new TestWindow(1, 0);
     }
 
     @Test

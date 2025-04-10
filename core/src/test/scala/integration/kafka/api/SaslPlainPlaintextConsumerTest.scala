@@ -12,35 +12,45 @@
   */
 package kafka.api
 
-import kafka.security.JaasTestUtils
-import kafka.utils.TestUtils
-import org.apache.kafka.common.network.ListenerName
-import org.apache.kafka.common.security.auth.SecurityProtocol
-import org.junit.jupiter.api._
-
+import java.io.File
 import java.util.Locale
 
-@Timeout(600)
+import kafka.server.KafkaConfig
+import kafka.utils.{JaasTestUtils, TestUtils}
+import org.apache.kafka.common.network.ListenerName
+import org.apache.kafka.common.security.auth.SecurityProtocol
+import org.junit.{After, Before, Test}
+
 class SaslPlainPlaintextConsumerTest extends BaseConsumerTest with SaslSetup {
   override protected def listenerName = new ListenerName("CLIENT")
   private val kafkaClientSaslMechanism = "PLAIN"
   private val kafkaServerSaslMechanisms = List(kafkaClientSaslMechanism)
   private val kafkaServerJaasEntryName =
-    s"${listenerName.value.toLowerCase(Locale.ROOT)}.${JaasTestUtils.KAFKA_SERVER_CONTEXT_NAME}"
+    s"${listenerName.value.toLowerCase(Locale.ROOT)}.${JaasTestUtils.KafkaServerContextName}"
+  this.serverConfig.setProperty(KafkaConfig.ZkEnableSecureAclsProp, "false")
   override protected def securityProtocol = SecurityProtocol.SASL_PLAINTEXT
-  override protected lazy val trustStoreFile = Some(TestUtils.tempFile("truststore", ".jks"))
+  override protected lazy val trustStoreFile = Some(File.createTempFile("truststore", ".jks"))
   override protected val serverSaslProperties = Some(kafkaServerSaslProperties(kafkaServerSaslMechanisms, kafkaClientSaslMechanism))
   override protected val clientSaslProperties = Some(kafkaClientSaslProperties(kafkaClientSaslMechanism))
 
-  @BeforeEach
-  override def setUp(testInfo: TestInfo): Unit = {
-    startSasl(jaasSections(kafkaServerSaslMechanisms, Some(kafkaClientSaslMechanism), kafkaServerJaasEntryName))
-    super.setUp(testInfo)
+  @Before
+  override def setUp(): Unit = {
+    startSasl(jaasSections(kafkaServerSaslMechanisms, Some(kafkaClientSaslMechanism), KafkaSasl, kafkaServerJaasEntryName))
+    super.setUp()
   }
 
-  @AfterEach
+  @After
   override def tearDown(): Unit = {
     super.tearDown()
     closeSasl()
+  }
+
+  /**
+   * Checks that everyone can access ZkUtils.SecureZkRootPaths and ZkUtils.SensitiveZkRootPaths
+   * when zookeeper.set.acl=false, even if Zookeeper is SASL-enabled.
+   */
+  @Test
+  def testZkAclsDisabled() {
+    TestUtils.verifyUnsecureZkAcls(zkUtils)
   }
 }

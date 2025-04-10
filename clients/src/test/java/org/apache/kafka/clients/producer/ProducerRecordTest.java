@@ -16,11 +16,11 @@
  */
 package org.apache.kafka.clients.producer;
 
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.fail;
 
 public class ProducerRecordTest {
 
@@ -35,16 +35,16 @@ public class ProducerRecordTest {
         assertEquals(producerRecord.hashCode(), equalRecord.hashCode());
 
         ProducerRecord<String, Integer> topicMisMatch = new ProducerRecord<>("test-1", 1, "key", 1);
-        assertNotEquals(producerRecord, topicMisMatch);
+        assertFalse(producerRecord.equals(topicMisMatch));
 
         ProducerRecord<String, Integer> partitionMismatch = new ProducerRecord<>("test", 2, "key", 1);
-        assertNotEquals(producerRecord, partitionMismatch);
+        assertFalse(producerRecord.equals(partitionMismatch));
 
         ProducerRecord<String, Integer> keyMisMatch = new ProducerRecord<>("test", 1, "key-1", 1);
-        assertNotEquals(producerRecord, keyMisMatch);
+        assertFalse(producerRecord.equals(keyMisMatch));
 
         ProducerRecord<String, Integer> valueMisMatch = new ProducerRecord<>("test", 1, "key", 2);
-        assertNotEquals(producerRecord, valueMisMatch);
+        assertFalse(producerRecord.equals(valueMisMatch));
 
         ProducerRecord<String, Integer> nullFieldsRecord = new ProducerRecord<>("topic", null, null, null, null, null);
         assertEquals(nullFieldsRecord, nullFieldsRecord);

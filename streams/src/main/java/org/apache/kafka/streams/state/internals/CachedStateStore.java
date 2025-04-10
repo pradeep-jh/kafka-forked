@@ -16,6 +16,8 @@
  */
 package org.apache.kafka.streams.state.internals;
 
+import org.apache.kafka.streams.kstream.internals.CacheFlushListener;
+
 public interface CachedStateStore<K, V> {
     /**
      * Set the {@link CacheFlushListener} to be notified when entries are flushed from the
@@ -23,23 +25,6 @@ public interface CachedStateStore<K, V> {
      * @param listener
      * @param sendOldValues
      */
-    boolean setFlushListener(final CacheFlushListener<K, V> listener,
-                             final boolean sendOldValues);
-
-    /**
-     * Flush only the cache but not the underlying state stores
-     *
-     * TODO: this is a hacky workaround for now, should be removed when we decouple caching with emitting
-     */
-    void flushCache();
-
-    /**
-     * Clear the cache; this is used if the underlying store could be updated directly
-     * and hence making the cache out of date.
-     * Please note this call does not try to flush the cache, instead if assumes the cache
-     * itself has been flushed completely
-     *
-     * TODO: this is a hacky workaround for now, should be removed when we decouple caching with emitting
-     */
-    void clearCache();
+    void setFlushListener(final CacheFlushListener<K, V> listener,
+                          final boolean sendOldValues);
 }

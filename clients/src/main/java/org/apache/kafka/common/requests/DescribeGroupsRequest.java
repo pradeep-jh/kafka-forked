@@ -16,76 +16,95 @@
  */
 package org.apache.kafka.common.requests;
 
-import org.apache.kafka.common.message.DescribeGroupsRequestData;
-import org.apache.kafka.common.message.DescribeGroupsResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.Readable;
+import org.apache.kafka.common.protocol.types.ArrayOf;
+import org.apache.kafka.common.protocol.types.Field;
+import org.apache.kafka.common.protocol.types.Schema;
+import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.utils.Utils;
 
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Collectors;
+
+import static org.apache.kafka.common.protocol.types.Type.STRING;
 
 public class DescribeGroupsRequest extends AbstractRequest {
-    public static class Builder extends AbstractRequest.Builder<DescribeGroupsRequest> {
-        private final DescribeGroupsRequestData data;
+    private static final String GROUP_IDS_KEY_NAME = "group_ids";
 
-        public Builder(DescribeGroupsRequestData data) {
+    /* Describe group api */
+    private static final Schema DESCRIBE_GROUPS_REQUEST_V0 = new Schema(
+            new Field(GROUP_IDS_KEY_NAME, new ArrayOf(STRING), "List of groupIds to request metadata for (an " +
+                    "empty groupId array will return empty group metadata)."));
+
+    /* v1 request is the same as v0. Throttle time has been added to response */
+    private static final Schema DESCRIBE_GROUPS_REQUEST_V1 = DESCRIBE_GROUPS_REQUEST_V0;
+
+    public static Schema[] schemaVersions() {
+        return new Schema[]{DESCRIBE_GROUPS_REQUEST_V0, DESCRIBE_GROUPS_REQUEST_V1};
+    }
+
+    public static class Builder extends AbstractRequest.Builder<DescribeGroupsRequest> {
+        private final List<String> groupIds;
+
+        public Builder(List<String> groupIds) {
             super(ApiKeys.DESCRIBE_GROUPS);
-            this.data = data;
+            this.groupIds = groupIds;
         }
 
         @Override
         public DescribeGroupsRequest build(short version) {
-            return new DescribeGroupsRequest(data, version);
+            return new DescribeGroupsRequest(this.groupIds, version);
         }
 
         @Override
         public String toString() {
-            return data.toString();
+            return "(type=DescribeGroupsRequest, groupIds=(" + Utils.join(groupIds, ",") + "))";
         }
     }
 
-    private final DescribeGroupsRequestData data;
+    private final List<String> groupIds;
 
-    private DescribeGroupsRequest(DescribeGroupsRequestData data, short version) {
-        super(ApiKeys.DESCRIBE_GROUPS, version);
-        this.data = data;
+    private DescribeGroupsRequest(List<String> groupIds, short version) {
+        super(version);
+        this.groupIds = groupIds;
+    }
+
+    public DescribeGroupsRequest(Struct struct, short version) {
+        super(version);
+        this.groupIds = new ArrayList<>();
+        for (Object groupId : struct.getArray(GROUP_IDS_KEY_NAME))
+            this.groupIds.add((String) groupId);
+    }
+
+    public List<String> groupIds() {
+        return groupIds;
     }
 
     @Override
-    public DescribeGroupsRequestData data() {
-        return data;
+    protected Struct toStruct() {
+        Struct struct = new Struct(ApiKeys.DESCRIBE_GROUPS.requestSchema(version()));
+        struct.set(GROUP_IDS_KEY_NAME, groupIds.toArray());
+        return struct;
     }
 
     @Override
     public AbstractResponse getErrorResponse(int throttleTimeMs, Throwable e) {
-        Errors error = Errors.forException(e);
-        DescribeGroupsResponseData describeGroupsResponseData = new DescribeGroupsResponseData();
+        short version = version();
+        switch (version) {
+            case 0:
+                return DescribeGroupsResponse.fromError(Errors.forException(e), groupIds);
+            case 1:
+                return DescribeGroupsResponse.fromError(throttleTimeMs, Errors.forException(e), groupIds);
 
-        data.groups().forEach(groupId ->
-            describeGroupsResponseData.groups().add(DescribeGroupsResponse.groupError(groupId, error))
-        );
-
-        if (version() >= 1) {
-            describeGroupsResponseData.setThrottleTimeMs(throttleTimeMs);
+            default:
+                throw new IllegalArgumentException(String.format("Version %d is not valid. Valid versions for %s are 0 to %d",
+                        version, this.getClass().getSimpleName(), ApiKeys.DESCRIBE_GROUPS.latestVersion()));
         }
-
-        return new DescribeGroupsResponse(describeGroupsResponseData);
     }
 
-    public static DescribeGroupsRequest parse(Readable readable, short version) {
-        return new DescribeGroupsRequest(new DescribeGroupsRequestData(readable, version), version);
-    }
-
-    public static List<DescribeGroupsResponseData.DescribedGroup> getErrorDescribedGroupList(
-        List<String> groupIds,
-        Errors error
-    ) {
-        return groupIds.stream()
-            .map(groupId -> new DescribeGroupsResponseData.DescribedGroup()
-                .setGroupId(groupId)
-                .setErrorCode(error.code())
-            )
-            .collect(Collectors.toList());
+    public static DescribeGroupsRequest parse(ByteBuffer buffer, short version) {
+        return new DescribeGroupsRequest(ApiKeys.DESCRIBE_GROUPS.parseRequest(version, buffer), version);
     }
 }

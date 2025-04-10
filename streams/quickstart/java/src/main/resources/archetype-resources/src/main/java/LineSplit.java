@@ -35,7 +35,7 @@ import java.util.concurrent.CountDownLatch;
  */
 public class LineSplit {
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
         Properties props = new Properties();
         props.put(StreamsConfig.APPLICATION_ID_CONFIG, "streams-linesplit");
         props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
@@ -45,8 +45,22 @@ public class LineSplit {
         final StreamsBuilder builder = new StreamsBuilder();
 
         builder.<String, String>stream("streams-plaintext-input")
-            .flatMapValues(value -> Arrays.asList(value.split("\\W+")))
-            .to("streams-linesplit-output");
+               .flatMapValues(new ValueMapper<String, Iterable<String>>() {
+                    @Override
+                    public Iterable<String> apply(String value) {
+                        return Arrays.asList(value.split("\\W+"));
+                    }
+                })
+               .to("streams-linesplit-output");
+
+        /* ------- use the code below for Java 8 and uncomment the above ----
+
+        builder.stream("streams-plaintext-input")
+               .flatMapValues(value -> Arrays.asList(value.split("\\W+")))
+               .to("streams-linesplit-output");
+
+           ----------------------------------------------------------------- */
+
 
         final Topology topology = builder.build();
         final KafkaStreams streams = new KafkaStreams(topology, props);

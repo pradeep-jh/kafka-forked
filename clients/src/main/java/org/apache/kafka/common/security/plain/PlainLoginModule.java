@@ -16,12 +16,11 @@
  */
 package org.apache.kafka.common.security.plain;
 
-import org.apache.kafka.common.security.plain.internals.PlainSaslServerProvider;
-
 import java.util.Map;
 
 import javax.security.auth.Subject;
 import javax.security.auth.callback.CallbackHandler;
+import javax.security.auth.login.LoginException;
 import javax.security.auth.spi.LoginModule;
 
 public class PlainLoginModule implements LoginModule {
@@ -44,22 +43,22 @@ public class PlainLoginModule implements LoginModule {
     }
 
     @Override
-    public boolean login() {
+    public boolean login() throws LoginException {
         return true;
     }
 
     @Override
-    public boolean logout() {
+    public boolean logout() throws LoginException {
         return true;
     }
 
     @Override
-    public boolean commit() {
+    public boolean commit() throws LoginException {
         return true;
     }
 
     @Override
-    public boolean abort() {
+    public boolean abort() throws LoginException {
         return false;
     }
 }

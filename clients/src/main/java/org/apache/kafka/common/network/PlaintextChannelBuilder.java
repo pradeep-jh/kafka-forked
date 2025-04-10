@@ -20,59 +20,36 @@ import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.memory.MemoryPool;
 import org.apache.kafka.common.security.auth.KafkaPrincipal;
 import org.apache.kafka.common.security.auth.KafkaPrincipalBuilder;
-import org.apache.kafka.common.security.auth.KafkaPrincipalSerde;
 import org.apache.kafka.common.security.auth.PlaintextAuthenticationContext;
 import org.apache.kafka.common.utils.Utils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.Closeable;
+import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.channels.SelectionKey;
 import java.util.Map;
-import java.util.Optional;
-import java.util.function.Supplier;
 
 public class PlaintextChannelBuilder implements ChannelBuilder {
-    private final ListenerName listenerName;
+    private static final Logger log = LoggerFactory.getLogger(PlaintextChannelBuilder.class);
     private Map<String, ?> configs;
-
-    /**
-     * Constructs a plaintext channel builder. ListenerName is non-null whenever
-     * it's instantiated in the broker and null otherwise.
-     */
-    public PlaintextChannelBuilder(ListenerName listenerName) {
-        this.listenerName = listenerName;
-    }
 
     public void configure(Map<String, ?> configs) throws KafkaException {
         this.configs = configs;
     }
 
     @Override
-    public KafkaChannel buildChannel(String id, SelectionKey key, int maxReceiveSize,
-                                     MemoryPool memoryPool, ChannelMetadataRegistry metadataRegistry) throws KafkaException {
-        PlaintextTransportLayer transportLayer = null;
+    public KafkaChannel buildChannel(String id, SelectionKey key, int maxReceiveSize, MemoryPool memoryPool) throws KafkaException {
         try {
-            transportLayer = buildTransportLayer(key);
-            final PlaintextTransportLayer finalTransportLayer = transportLayer;
-            Supplier<Authenticator> authenticatorCreator = () -> new PlaintextAuthenticator(configs, finalTransportLayer, listenerName);
-            return buildChannel(id, transportLayer, authenticatorCreator, maxReceiveSize,
-                    memoryPool != null ? memoryPool : MemoryPool.NONE, metadataRegistry);
+            PlaintextTransportLayer transportLayer = new PlaintextTransportLayer(key);
+            PlaintextAuthenticator authenticator = new PlaintextAuthenticator(configs, transportLayer);
+            return new KafkaChannel(id, transportLayer, authenticator, maxReceiveSize,
+                    memoryPool != null ? memoryPool : MemoryPool.NONE);
         } catch (Exception e) {
-            // Ideally these resources are closed by the KafkaChannel but this builder should close the resources instead
-            // if an error occurs due to which KafkaChannel is not created.
-            Utils.closeQuietly(transportLayer, "transport layer for channel Id: " + id);
+            log.warn("Failed to create channel due to ", e);
             throw new KafkaException(e);
         }
-    }
-
-    // visible for testing
-    KafkaChannel buildChannel(String id, TransportLayer transportLayer, Supplier<Authenticator> authenticatorCreator,
-                              int maxReceiveSize, MemoryPool memoryPool, ChannelMetadataRegistry metadataRegistry) {
-        return new KafkaChannel(id, transportLayer, authenticatorCreator, maxReceiveSize, memoryPool, metadataRegistry);
-    }
-
-    protected PlaintextTransportLayer buildTransportLayer(SelectionKey key) {
-        return new PlaintextTransportLayer(key);
     }
 
     @Override
@@ -81,29 +58,19 @@ public class PlaintextChannelBuilder implements ChannelBuilder {
     private static class PlaintextAuthenticator implements Authenticator {
         private final PlaintextTransportLayer transportLayer;
         private final KafkaPrincipalBuilder principalBuilder;
-        private final ListenerName listenerName;
 
-        private PlaintextAuthenticator(Map<String, ?> configs, PlaintextTransportLayer transportLayer, ListenerName listenerName) {
+        private PlaintextAuthenticator(Map<String, ?> configs, PlaintextTransportLayer transportLayer) {
             this.transportLayer = transportLayer;
-            this.principalBuilder = ChannelBuilders.createPrincipalBuilder(configs, null, null);
-            this.listenerName = listenerName;
+            this.principalBuilder = ChannelBuilders.createPrincipalBuilder(configs, transportLayer, this, null);
         }
 
         @Override
-        public void authenticate() {}
+        public void authenticate() throws IOException {}
 
         @Override
         public KafkaPrincipal principal() {
             InetAddress clientAddress = transportLayer.socketChannel().socket().getInetAddress();
-            // listenerName should only be null in Client mode where principal() should not be called
-            if (listenerName == null)
-                throw new IllegalStateException("Unexpected call to principal() when listenerName is null");
-            return principalBuilder.build(new PlaintextAuthenticationContext(clientAddress, listenerName.value()));
-        }
-
-        @Override
-        public Optional<KafkaPrincipalSerde> principalSerde() {
-            return principalBuilder instanceof KafkaPrincipalSerde ? Optional.of((KafkaPrincipalSerde) principalBuilder) : Optional.empty();
+            return principalBuilder.build(new PlaintextAuthenticationContext(clientAddress));
         }
 
         @Override

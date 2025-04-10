@@ -16,108 +16,79 @@
  */
 package org.apache.kafka.streams.kstream.internals;
 
-import org.apache.kafka.common.serialization.IntegerSerializer;
 import org.apache.kafka.common.serialization.Serdes;
-import org.apache.kafka.common.serialization.StringSerializer;
+import org.apache.kafka.streams.Consumed;
 import org.apache.kafka.streams.StreamsBuilder;
-import org.apache.kafka.streams.TestInputTopic;
-import org.apache.kafka.streams.TopologyTestDriver;
-import org.apache.kafka.streams.kstream.Consumed;
 import org.apache.kafka.streams.kstream.KStream;
-import org.apache.kafka.streams.kstream.ValueTransformerWithKeySupplier;
-import org.apache.kafka.streams.kstream.internals.graph.ProcessorGraphNode;
-import org.apache.kafka.streams.kstream.internals.graph.ProcessorParameters;
-import org.apache.kafka.streams.processor.api.ContextualProcessor;
-import org.apache.kafka.streams.processor.api.Processor;
-import org.apache.kafka.streams.processor.api.ProcessorSupplier;
-import org.apache.kafka.streams.processor.api.Record;
-import org.apache.kafka.test.MockApiProcessorSupplier;
-import org.apache.kafka.test.NoopValueTransformerWithKey;
-
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.mockito.junit.jupiter.MockitoSettings;
-import org.mockito.quality.Strictness;
+import org.apache.kafka.streams.processor.AbstractProcessor;
+import org.apache.kafka.streams.processor.Processor;
+import org.apache.kafka.streams.processor.ProcessorSupplier;
+import org.apache.kafka.test.KStreamTestDriver;
+import org.apache.kafka.test.MockProcessorSupplier;
+import org.junit.Rule;
+import org.junit.Test;
 
 import java.util.Random;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
+import static org.junit.Assert.assertTrue;
 
-@ExtendWith(MockitoExtension.class)
-@MockitoSettings(strictness = Strictness.STRICT_STUBS)
 public class AbstractStreamTest {
 
-    @Test
-    public void testToInternalValueTransformerWithKeySupplierSuppliesNewTransformers() {
-        final ValueTransformerWithKeySupplier<?, ?, ?> valueTransformerWithKeySupplier =
-            mock(ValueTransformerWithKeySupplier.class);
-        when(valueTransformerWithKeySupplier.get()).thenReturn(new NoopValueTransformerWithKey<>());
-        valueTransformerWithKeySupplier.get();
-        valueTransformerWithKeySupplier.get();
-        valueTransformerWithKeySupplier.get();
-    }
+    private final String topicName = "topic";
+    @Rule
+    public final KStreamTestDriver driver = new KStreamTestDriver();
 
     @Test
     public void testShouldBeExtensible() {
         final StreamsBuilder builder = new StreamsBuilder();
         final int[] expectedKeys = new int[]{1, 2, 3, 4, 5, 6, 7};
-        final MockApiProcessorSupplier<Integer, String, Void, Void> supplier = new MockApiProcessorSupplier<>();
+        final MockProcessorSupplier<Integer, String> processor = new MockProcessorSupplier<>();
         final String topicName = "topic";
 
-        final ExtendedKStream<Integer, String> stream = new ExtendedKStream<>(builder.stream(topicName, Consumed.with(Serdes.Integer(), Serdes.String())));
+        ExtendedKStream<Integer, String> stream = new ExtendedKStream<>(builder.stream(topicName, Consumed.with(Serdes.Integer(), Serdes.String())));
 
-        stream.randomFilter().process(supplier);
+        stream.randomFilter().process(processor);
 
-        try (final TopologyTestDriver driver = new TopologyTestDriver(builder.build())) {
-
-            final TestInputTopic<Integer, String> inputTopic = driver.createInputTopic(topicName, new IntegerSerializer(), new StringSerializer());
-            for (final int expectedKey : expectedKeys) {
-                inputTopic.pipeInput(expectedKey, "V" + expectedKey);
-            }
-
-            assertTrue(supplier.theCapturedProcessor().processed().size() <= expectedKeys.length);
+        driver.setUp(builder);
+        for (int expectedKey : expectedKeys) {
+            driver.process(topicName, expectedKey, "V" + expectedKey);
         }
+
+        assertTrue(processor.processed.size() <= expectedKeys.length);
     }
 
-    private static class ExtendedKStream<K, V> extends AbstractStream<K, V> {
+    private class ExtendedKStream<K, V> extends AbstractStream<K> {
 
         ExtendedKStream(final KStream<K, V> stream) {
             super((KStreamImpl<K, V>) stream);
         }
 
         KStream<K, V> randomFilter() {
-            final String name = builder.newProcessorName("RANDOM-FILTER-");
-            final ProcessorGraphNode<K, V> processorNode = new ProcessorGraphNode<>(
-                name,
-                new ProcessorParameters<>(new ExtendedKStreamDummy<>(), name));
-            builder.addGraphNode(this.graphNode, processorNode);
-            return new KStreamImpl<>(name, null, null, subTopologySourceNodes, false, processorNode, builder);
+            String name = builder.newProcessorName("RANDOM-FILTER-");
+            builder.internalTopologyBuilder.addProcessor(name, new ExtendedKStreamDummy(), this.name);
+            return new KStreamImpl<>(builder, name, sourceNodes, false);
         }
     }
 
-    private static class ExtendedKStreamDummy<K, V> implements ProcessorSupplier<K, V, K, V> {
+    private class ExtendedKStreamDummy<K, V> implements ProcessorSupplier<K, V> {
 
-        private final Random rand;
+        private Random rand;
 
         ExtendedKStreamDummy() {
             rand = new Random();
         }
 
         @Override
-        public Processor<K, V, K, V> get() {
+        public Processor<K, V> get() {
             return new ExtendedKStreamDummyProcessor();
         }
 
-        private class ExtendedKStreamDummyProcessor extends ContextualProcessor<K, V, K, V> {
+        private class ExtendedKStreamDummyProcessor extends AbstractProcessor<K, V> {
             @Override
-            public void process(final Record<K, V> record) {
+            public void process(K key, V value) {
                 // flip a coin and filter
-                if (rand.nextBoolean()) {
-                    context().forward(record);
-                }
+                if (rand.nextBoolean())
+                    context().forward(key, value);
             }
         }
     }

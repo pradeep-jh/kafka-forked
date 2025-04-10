@@ -17,19 +17,11 @@
 
 package org.apache.kafka.streams.kstream;
 
-import org.apache.kafka.streams.errors.TopologyException;
+import org.apache.kafka.common.errors.InvalidTopicException;
 import org.apache.kafka.streams.state.KeyValueBytesStoreSupplier;
 import org.apache.kafka.streams.state.SessionBytesStoreSupplier;
-import org.apache.kafka.streams.state.Stores;
 import org.apache.kafka.streams.state.WindowBytesStoreSupplier;
-
-import org.junit.jupiter.api.Test;
-
-import java.time.Duration;
-import java.time.temporal.ChronoUnit;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import org.junit.Test;
 
 public class MaterializedTest {
 
@@ -40,72 +32,23 @@ public class MaterializedTest {
         Materialized.as("valid_name");
     }
 
-    @Test
+    @Test(expected = InvalidTopicException.class)
     public void shouldNotAllowInvalidTopicNames() {
-        final String invalidName = "not:valid";
-        final TopologyException e = assertThrows(TopologyException.class,
-            () -> Materialized.as(invalidName));
-
-        assertEquals(e.getMessage(), "Invalid topology: Name \"" + invalidName +
-            "\" is illegal, it contains a character other than " + "ASCII alphanumerics, '.', '_' and '-'");
+        Materialized.as("not:valid");
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerIfWindowBytesStoreSupplierIsNull() {
-        final NullPointerException e = assertThrows(NullPointerException.class,
-            () -> Materialized.as((WindowBytesStoreSupplier) null));
-
-        assertEquals(e.getMessage(), "supplier can't be null");
+        Materialized.as((WindowBytesStoreSupplier) null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerIfKeyValueBytesStoreSupplierIsNull() {
-        final NullPointerException e = assertThrows(NullPointerException.class,
-            () -> Materialized.as((KeyValueBytesStoreSupplier) null));
-
-        assertEquals(e.getMessage(), "supplier can't be null");
+        Materialized.as((KeyValueBytesStoreSupplier) null);
     }
 
-    @Test
-    public void shouldThrowNullPointerIfStoreTypeIsNull() {
-        final NullPointerException e = assertThrows(NullPointerException.class,
-            () -> Materialized.as((Materialized.StoreType) null));
-
-        assertEquals(e.getMessage(), "store type can't be null");
-    }
-
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerIfSessionBytesStoreSupplierIsNull() {
-        final NullPointerException e = assertThrows(NullPointerException.class,
-            () -> Materialized.as((SessionBytesStoreSupplier) null));
-
-        assertEquals(e.getMessage(), "supplier can't be null");
-    }
-
-    @Test
-    public void shouldThrowIllegalArgumentExceptionIfRetentionIsNegative() {
-        final IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
-            () -> Materialized.as("valid-name").withRetention(Duration.of(-1, ChronoUnit.DAYS)));
-
-        assertEquals(e.getMessage(), "Retention must not be negative.");
-    }
-
-    @Test
-    public void shouldThrowIllegalArgumentExceptionIfStoreSupplierAndStoreTypeBothSet() {
-        final IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
-                () -> Materialized.as(Stores.persistentKeyValueStore("test")).withStoreType(Materialized.StoreType.ROCKS_DB));
-
-        assertEquals(e.getMessage(), "Cannot set store type when store supplier is pre-configured.");
-    }
-
-    @Test
-    public void shouldThrowTopologyExceptionIfStoreNameExceedsMaxAllowedLength() {
-        final int maxNameLength = 249;
-        final String invalidStoreName = "a".repeat(maxNameLength + 1);
-
-        final TopologyException e = assertThrows(TopologyException.class,
-            () -> Materialized.as(invalidStoreName));
-        assertEquals(e.getMessage(), "Invalid topology: Name is illegal, it can't be longer than " + maxNameLength +
-                " characters, name: " + invalidStoreName);
+        Materialized.as((SessionBytesStoreSupplier) null);
     }
 }

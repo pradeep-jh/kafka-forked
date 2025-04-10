@@ -16,17 +16,18 @@
  */
 package org.apache.kafka.common.security.authenticator;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class CredentialCache {
 
-    private final ConcurrentHashMap<String, Cache<?>> cacheMap = new ConcurrentHashMap<>();
+    private final Map<String, Cache<? extends Object>> cacheMap = new HashMap<>();
 
     public <C> Cache<C> createCache(String mechanism, Class<C> credentialClass) {
-        Cache<C> cache = new Cache<>(credentialClass);
-        @SuppressWarnings("unchecked")
-        Cache<C> oldCache = (Cache<C>) cacheMap.putIfAbsent(mechanism, cache);
-        return oldCache == null ? cache : oldCache;
+        Cache<C> cache = new Cache<C>(credentialClass);
+        cacheMap.put(mechanism, cache);
+        return cache;
     }
 
     @SuppressWarnings("unchecked")

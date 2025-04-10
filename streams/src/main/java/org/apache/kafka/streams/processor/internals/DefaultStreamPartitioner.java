@@ -16,33 +16,28 @@
  */
 package org.apache.kafka.streams.processor.internals;
 
-import org.apache.kafka.clients.producer.internals.BuiltInPartitioner;
+import org.apache.kafka.clients.producer.internals.DefaultPartitioner;
+import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.streams.processor.StreamPartitioner;
-
-import java.util.Collections;
-import java.util.Optional;
-import java.util.Set;
 
 public class DefaultStreamPartitioner<K, V> implements StreamPartitioner<K, V> {
 
     private final Serializer<K> keySerializer;
+    private final Cluster cluster;
+    private final String topic;
+    private final DefaultPartitioner defaultPartitioner;
 
-    public DefaultStreamPartitioner(final Serializer<K> keySerializer) {
+    public DefaultStreamPartitioner(final Serializer<K> keySerializer, final Cluster cluster, final String topic) {
         this.keySerializer = keySerializer;
+        this.cluster = cluster;
+        this.topic = topic;
+        this.defaultPartitioner = new DefaultPartitioner();
     }
 
     @Override
-    public Optional<Set<Integer>> partitions(final String topic, final K key, final V value, final int numPartitions) {
+    public Integer partition(final K key, final V value, final int numPartitions) {
         final byte[] keyBytes = keySerializer.serialize(topic, key);
-
-        // if the key bytes are not available, we just return empty optional to let the producer decide
-        // which partition to send internally; otherwise stick with the same built-in partitioner
-        // util functions that producer used to make sure its behavior is consistent with the producer
-        if (keyBytes == null) {
-            return Optional.empty();
-        } else {
-            return Optional.of(Collections.singleton(BuiltInPartitioner.partitionForKey(keyBytes, numPartitions)));
-        }
+        return defaultPartitioner.partition(topic, key, keyBytes, value, null, cluster);
     }
 }

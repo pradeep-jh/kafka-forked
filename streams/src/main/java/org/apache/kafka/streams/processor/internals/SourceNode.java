@@ -16,84 +16,69 @@
  */
 package org.apache.kafka.streams.processor.internals;
 
-import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.header.Headers;
-import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.serialization.Deserializer;
-import org.apache.kafka.streams.errors.StreamsException;
+import org.apache.kafka.common.serialization.ExtendedDeserializer;
+import org.apache.kafka.streams.kstream.internals.ChangedDeserializer;
+import org.apache.kafka.streams.processor.ProcessorContext;
 import org.apache.kafka.streams.processor.TimestampExtractor;
-import org.apache.kafka.streams.processor.api.Record;
-import org.apache.kafka.streams.processor.internals.metrics.ProcessorNodeMetrics;
 
-import static org.apache.kafka.streams.kstream.internals.WrappingNullableUtils.prepareKeyDeserializer;
-import static org.apache.kafka.streams.kstream.internals.WrappingNullableUtils.prepareValueDeserializer;
+import java.util.List;
 
-public class SourceNode<KIn, VIn> extends ProcessorNode<KIn, VIn, KIn, VIn> {
+import static org.apache.kafka.common.serialization.ExtendedDeserializer.Wrapper.ensureExtended;
 
-    private InternalProcessorContext<KIn, VIn> context;
-    private Deserializer<KIn> keyDeserializer;
-    private Deserializer<VIn> valDeserializer;
+public class SourceNode<K, V> extends ProcessorNode<K, V> {
+
+    private final List<String> topics;
+
+    private ProcessorContext context;
+    private ExtendedDeserializer<K> keyDeserializer;
+    private ExtendedDeserializer<V> valDeserializer;
     private final TimestampExtractor timestampExtractor;
-    private Sensor processAtSourceSensor;
 
-    public SourceNode(final String name,
-                      final TimestampExtractor timestampExtractor,
-                      final Deserializer<KIn> keyDeserializer,
-                      final Deserializer<VIn> valDeserializer) {
+    public SourceNode(String name, List<String> topics, TimestampExtractor timestampExtractor, Deserializer<K> keyDeserializer, Deserializer<V> valDeserializer) {
         super(name);
+        this.topics = topics;
         this.timestampExtractor = timestampExtractor;
-        this.keyDeserializer = keyDeserializer;
-        this.valDeserializer = valDeserializer;
+        this.keyDeserializer = ensureExtended(keyDeserializer);
+        this.valDeserializer = ensureExtended(valDeserializer);
     }
 
-    public SourceNode(final String name,
-                      final Deserializer<KIn> keyDeserializer,
-                      final Deserializer<VIn> valDeserializer) {
-        this(name, null, keyDeserializer, valDeserializer);
+    public SourceNode(String name, List<String> topics, Deserializer<K> keyDeserializer, Deserializer<V> valDeserializer) {
+        this(name, topics, null, keyDeserializer, valDeserializer);
     }
 
-    KIn deserializeKey(final String topic, final Headers headers, final byte[] data) {
+    K deserializeKey(String topic, Headers headers, byte[] data) {
         return keyDeserializer.deserialize(topic, headers, data);
     }
 
-    VIn deserializeValue(final String topic, final Headers headers, final byte[] data) {
+    V deserializeValue(String topic, Headers headers, byte[] data) {
         return valDeserializer.deserialize(topic, headers, data);
     }
 
+    @SuppressWarnings("unchecked")
     @Override
-    public void init(final InternalProcessorContext<KIn, VIn> context) {
-        // It is important to first create the sensor before calling init on the
-        // parent object. Otherwise due to backwards compatibility an empty sensor
-        // without parent is created with the same name.
-        // Once the backwards compatibility is not needed anymore it might be possible to
-        // change this.
-        processAtSourceSensor = ProcessorNodeMetrics.processAtSourceSensor(
-            Thread.currentThread().getName(),
-            context.taskId().toString(),
-            context.currentNode().name(),
-            context.metrics()
-        );
+    public void init(ProcessorContext context) {
         super.init(context);
         this.context = context;
 
-        try {
-            keyDeserializer = prepareKeyDeserializer(keyDeserializer, context);
-        } catch (final ConfigException | StreamsException e) {
-            throw new StreamsException(String.format("Failed to initialize key serdes for source node %s", name()), e, context.taskId());
-        }
+        // if deserializers are null, get the default ones from the context
+        if (this.keyDeserializer == null)
+            this.keyDeserializer = ensureExtended((Deserializer<K>) context.keySerde().deserializer());
+        if (this.valDeserializer == null)
+            this.valDeserializer = ensureExtended((Deserializer<V>) context.valueSerde().deserializer());
 
-        try {
-            valDeserializer = prepareValueDeserializer(valDeserializer, context);
-        } catch (final ConfigException | StreamsException e) {
-            throw new StreamsException(String.format("Failed to initialize value serdes for source node %s", name()), e, context.taskId());
-        }
+        // if value deserializers are for {@code Change} values, set the inner deserializer when necessary
+        if (this.valDeserializer instanceof ChangedDeserializer &&
+                ((ChangedDeserializer) this.valDeserializer).inner() == null)
+            ((ChangedDeserializer) this.valDeserializer).setInner(context.valueSerde().deserializer());
     }
 
 
     @Override
-    public void process(final Record<KIn, VIn> record) {
-        context.forward(record);
-        processAtSourceSensor.record(1.0d, context.currentSystemTimeMs());
+    public void process(final K key, final V value) {
+        context.forward(key, value);
+        nodeMetrics.sourceNodeForwardSensor.record();
     }
 
     /**
@@ -104,7 +89,22 @@ public class SourceNode<KIn, VIn> extends ProcessorNode<KIn, VIn, KIn, VIn> {
         return toString("");
     }
 
-    public TimestampExtractor timestampExtractor() {
+    /**
+     * @return a string representation of this node starting with the given indent, useful for debugging.
+     */
+    public String toString(String indent) {
+        final StringBuilder sb = new StringBuilder(super.toString(indent));
+        sb.append(indent).append("\ttopics:\t\t[");
+        for (String topic : topics) {
+            sb.append(topic);
+            sb.append(", ");
+        }
+        sb.setLength(sb.length() - 2);  // remove the last comma
+        sb.append("]\n");
+        return sb.toString();
+    }
+
+    public TimestampExtractor getTimestampExtractor() {
         return timestampExtractor;
     }
 }

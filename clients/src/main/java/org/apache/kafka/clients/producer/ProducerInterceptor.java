@@ -33,10 +33,8 @@ import org.apache.kafka.common.Configurable;
  * ProducerInterceptor callbacks may be called from multiple threads. Interceptor implementation must ensure thread-safety, if needed.
  * <p>
  * Implement {@link org.apache.kafka.common.ClusterResourceListener} to receive cluster metadata once it's available. Please see the class documentation for ClusterResourceListener for more information.
- * Implement {@link org.apache.kafka.common.metrics.Monitorable} to enable the interceptor to register metrics. The following tags are automatically added to
- * all metrics registered: <code>config</code> set to <code>interceptor.classes</code>, and <code>class</code> set to the ProducerInterceptor class name.
  */
-public interface ProducerInterceptor<K, V> extends Configurable, AutoCloseable {
+public interface ProducerInterceptor<K, V> extends Configurable {
     /**
      * This is called from {@link org.apache.kafka.clients.producer.KafkaProducer#send(ProducerRecord)} and
      * {@link org.apache.kafka.clients.producer.KafkaProducer#send(ProducerRecord, Callback)} methods, before key and value
@@ -66,7 +64,7 @@ public interface ProducerInterceptor<K, V> extends Configurable, AutoCloseable {
      * @param record the record from client or the record returned by the previous interceptor in the chain of interceptors.
      * @return producer record to send to topic/partition
      */
-    ProducerRecord<K, V> onSend(ProducerRecord<K, V> record);
+    public ProducerRecord<K, V> onSend(ProducerRecord<K, V> record);
 
     /**
      * This method is called when the record sent to the server has been acknowledged, or when sending the record fails before
@@ -88,10 +86,10 @@ public interface ProducerInterceptor<K, V> extends Configurable, AutoCloseable {
      *                 {@link org.apache.kafka.clients.producer.KafkaProducer#send(ProducerRecord)}.
      * @param exception The exception thrown during processing of this record. Null if no error occurred.
      */
-    void onAcknowledgement(RecordMetadata metadata, Exception exception);
+    public void onAcknowledgement(RecordMetadata metadata, Exception exception);
 
     /**
      * This is called when interceptor is closed
      */
-    void close();
+    public void close();
 }

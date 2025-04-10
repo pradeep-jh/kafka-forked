@@ -16,20 +16,19 @@
  */
 package org.apache.kafka.common.security.authenticator;
 
-import org.apache.kafka.common.config.types.Password;
-import org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule;
-import org.apache.kafka.common.security.plain.PlainLoginModule;
-import org.apache.kafka.common.security.scram.ScramLoginModule;
-import org.apache.kafka.common.security.scram.internals.ScramMechanism;
-
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 import javax.security.auth.login.AppConfigurationEntry;
-import javax.security.auth.login.AppConfigurationEntry.LoginModuleControlFlag;
 import javax.security.auth.login.Configuration;
+import javax.security.auth.login.AppConfigurationEntry.LoginModuleControlFlag;
+
+import org.apache.kafka.common.config.types.Password;
+import org.apache.kafka.common.security.plain.PlainLoginModule;
+import org.apache.kafka.common.security.scram.ScramLoginModule;
+import org.apache.kafka.common.security.scram.ScramMechanism;
 
 public class TestJaasConfig extends Configuration {
 
@@ -39,11 +38,11 @@ public class TestJaasConfig extends Configuration {
     static final String USERNAME = "myuser";
     static final String PASSWORD = "mypassword";
 
-    private final Map<String, AppConfigurationEntry[]> entryMap = new HashMap<>();
+    private Map<String, AppConfigurationEntry[]> entryMap = new HashMap<>();
 
     public static TestJaasConfig createConfiguration(String clientMechanism, List<String> serverMechanisms) {
         TestJaasConfig config = new TestJaasConfig();
-        config.createOrUpdateEntry(LOGIN_CONTEXT_CLIENT, loginModule(clientMechanism), defaultClientOptions(clientMechanism));
+        config.createOrUpdateEntry(LOGIN_CONTEXT_CLIENT, loginModule(clientMechanism), defaultClientOptions());
         for (String mechanism : serverMechanisms) {
             config.addEntry(LOGIN_CONTEXT_SERVER, loginModule(mechanism), defaultServerOptions(mechanism));
         }
@@ -53,20 +52,6 @@ public class TestJaasConfig extends Configuration {
 
     public static Password jaasConfigProperty(String mechanism, String username, String password) {
         return new Password(loginModule(mechanism) + " required username=" + username + " password=" + password + ";");
-    }
-
-    public static Password jaasConfigProperty(String mechanism, Map<String, Object> options) {
-        StringBuilder builder = new StringBuilder();
-        builder.append(loginModule(mechanism));
-        builder.append(" required");
-        for (Map.Entry<String, Object> option : options.entrySet()) {
-            builder.append(' ');
-            builder.append(option.getKey());
-            builder.append('=');
-            builder.append(option.getValue());
-        }
-        builder.append(';');
-        return new Password(builder.toString());
     }
 
     public void setClientOptions(String saslMechanism, String clientUsername, String clientPassword) {
@@ -106,9 +91,6 @@ public class TestJaasConfig extends Configuration {
             case "DIGEST-MD5":
                 loginModule = TestDigestLoginModule.class.getName();
                 break;
-            case "OAUTHBEARER":
-                loginModule = OAuthBearerLoginModule.class.getName();
-                break;
             default:
                 if (ScramMechanism.isScram(mechanism))
                     loginModule = ScramLoginModule.class.getName();
@@ -118,17 +100,6 @@ public class TestJaasConfig extends Configuration {
         return loginModule;
     }
 
-    public static Map<String, Object> defaultClientOptions(String mechanism) {
-        switch (mechanism) {
-            case "OAUTHBEARER":
-                Map<String, Object> options = new HashMap<>();
-                options.put("unsecuredLoginStringClaim_sub", USERNAME);
-                return options;
-            default:
-                return defaultClientOptions();
-        }
-    }
-    
     public static Map<String, Object> defaultClientOptions() {
         Map<String, Object> options = new HashMap<>();
         options.put("username", USERNAME);
@@ -142,9 +113,6 @@ public class TestJaasConfig extends Configuration {
             case "PLAIN":
             case "DIGEST-MD5":
                 options.put("user_" + USERNAME, PASSWORD);
-                break;
-            case "OAUTHBEARER":
-                options.put("unsecuredLoginStringClaim_sub", USERNAME);
                 break;
             default:
                 if (!ScramMechanism.isScram(mechanism))

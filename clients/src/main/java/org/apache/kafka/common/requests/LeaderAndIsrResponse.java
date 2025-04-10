@@ -17,79 +17,102 @@
 package org.apache.kafka.common.requests;
 
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.Uuid;
+import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.protocol.types.ArrayOf;
+import org.apache.kafka.common.protocol.types.Field;
+import org.apache.kafka.common.protocol.types.Schema;
+import org.apache.kafka.common.protocol.types.Struct;
 
-import java.util.Collections;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-public class LeaderAndIsrResponse {
+import static org.apache.kafka.common.protocol.CommonFields.ERROR_CODE;
+import static org.apache.kafka.common.protocol.CommonFields.PARTITION_ID;
+import static org.apache.kafka.common.protocol.CommonFields.TOPIC_NAME;
+
+public class LeaderAndIsrResponse extends AbstractResponse {
+    private static final String PARTITIONS_KEY_NAME = "partitions";
+
+    private static final Schema LEADER_AND_ISR_RESPONSE_PARTITION_V0 = new Schema(
+            TOPIC_NAME,
+            PARTITION_ID,
+            ERROR_CODE);
+    private static final Schema LEADER_AND_ISR_RESPONSE_V0 = new Schema(
+            ERROR_CODE,
+            new Field(PARTITIONS_KEY_NAME, new ArrayOf(LEADER_AND_ISR_RESPONSE_PARTITION_V0)));
+
+    // LeaderAndIsrResponse V1 may receive KAFKA_STORAGE_ERROR in the response
+    private static final Schema LEADER_AND_ISR_RESPONSE_V1 = LEADER_AND_ISR_RESPONSE_V0;
+
+    public static Schema[] schemaVersions() {
+        return new Schema[]{LEADER_AND_ISR_RESPONSE_V0, LEADER_AND_ISR_RESPONSE_V1};
+    }
 
     /**
      * Possible error code:
      *
      * STALE_CONTROLLER_EPOCH (11)
-     * STALE_BROKER_EPOCH (77)
      */
     private final Errors error;
-    private final LinkedHashMap<Uuid, List<PartitionError>> topicErrors;
 
-    public LeaderAndIsrResponse(Errors error, LinkedHashMap<Uuid, List<PartitionError>> topicErrors) {
+    private final Map<TopicPartition, Errors> responses;
+
+    public LeaderAndIsrResponse(Errors error, Map<TopicPartition, Errors> responses) {
+        this.responses = responses;
         this.error = error;
-        this.topicErrors = topicErrors;
     }
 
-    public LinkedHashMap<Uuid, List<PartitionError>> topics() {
-        return topicErrors;
+    public LeaderAndIsrResponse(Struct struct) {
+        responses = new HashMap<>();
+        for (Object responseDataObj : struct.getArray(PARTITIONS_KEY_NAME)) {
+            Struct responseData = (Struct) responseDataObj;
+            String topic = responseData.get(TOPIC_NAME);
+            int partition = responseData.get(PARTITION_ID);
+            Errors error = Errors.forCode(responseData.get(ERROR_CODE));
+            responses.put(new TopicPartition(topic, partition), error);
+        }
+
+        error = Errors.forCode(struct.get(ERROR_CODE));
+    }
+
+    public Map<TopicPartition, Errors> responses() {
+        return responses;
     }
 
     public Errors error() {
         return error;
     }
 
+    @Override
     public Map<Errors, Integer> errorCounts() {
-        Errors error = error();
-        if (error != Errors.NONE) {
-            // Minor optimization since the top-level error applies to all partitions
-            return Collections.singletonMap(error, topics().values().stream().mapToInt(partitionErrors ->
-                    partitionErrors.size()).sum() + 1);
-        }
-        Map<Errors, Integer> errors = AbstractResponse.errorCounts(topics().values().stream().flatMap(partitionErrors ->
-                partitionErrors.stream()).map(p -> Errors.forCode(p.errorCode)));
-        AbstractResponse.updateErrorCounts(errors, Errors.NONE);
-        return errors;
+        return errorCounts(error);
     }
 
-    public Map<TopicPartition, Errors> partitionErrors(Map<Uuid, String> topicNames) {
-        Map<TopicPartition, Errors> errors = new HashMap<>();
-        topics().forEach((topicId, partitionErrors) -> {
-            String topicName = topicNames.get(topicId);
-            if (topicName != null) {
-                partitionErrors.forEach(partition ->
-                    errors.put(new TopicPartition(topicName, partition.partitionIndex), Errors.forCode(partition.errorCode)));
-            }
-        });
-        return errors;
+    public static LeaderAndIsrResponse parse(ByteBuffer buffer, short version) {
+        return new LeaderAndIsrResponse(ApiKeys.LEADER_AND_ISR.parseResponse(version, buffer));
     }
 
     @Override
-    public String toString() {
-        return "LeaderAndIsrResponse{" +
-                "error=" + error +
-                ", topicErrors=" + topicErrors +
-                '}';
-    }
+    protected Struct toStruct(short version) {
+        Struct struct = new Struct(ApiKeys.LEADER_AND_ISR.responseSchema(version));
 
-    public static class PartitionError {
-        public final int partitionIndex;
-        public final short errorCode;
-
-        public PartitionError(int partitionIndex, short errorCode) {
-            this.partitionIndex = partitionIndex;
-            this.errorCode = errorCode;
+        List<Struct> responseDatas = new ArrayList<>(responses.size());
+        for (Map.Entry<TopicPartition, Errors> response : responses.entrySet()) {
+            Struct partitionData = struct.instance(PARTITIONS_KEY_NAME);
+            TopicPartition partition = response.getKey();
+            partitionData.set(TOPIC_NAME, partition.topic());
+            partitionData.set(PARTITION_ID, partition.partition());
+            partitionData.set(ERROR_CODE, response.getValue().code());
+            responseDatas.add(partitionData);
         }
+
+        struct.set(PARTITIONS_KEY_NAME, responseDatas.toArray());
+        struct.set(ERROR_CODE, error.code());
+
+        return struct;
     }
 }

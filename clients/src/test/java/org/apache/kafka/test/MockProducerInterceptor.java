@@ -20,8 +20,8 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerInterceptor;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
-import org.apache.kafka.common.ClusterResource;
 import org.apache.kafka.common.ClusterResourceListener;
+import org.apache.kafka.common.ClusterResource;
 import org.apache.kafka.common.config.ConfigException;
 
 import java.util.Map;
@@ -32,13 +32,9 @@ public class MockProducerInterceptor implements ClusterResourceListener, Produce
     public static final AtomicInteger INIT_COUNT = new AtomicInteger(0);
     public static final AtomicInteger CLOSE_COUNT = new AtomicInteger(0);
     public static final AtomicInteger ONSEND_COUNT = new AtomicInteger(0);
-    public static final AtomicInteger CONFIG_COUNT = new AtomicInteger(0);
-    public static final AtomicInteger THROW_CONFIG_EXCEPTION = new AtomicInteger(0);
-    public static final AtomicInteger THROW_ON_CONFIG_EXCEPTION_THRESHOLD = new AtomicInteger(0);
     public static final AtomicInteger ON_SUCCESS_COUNT = new AtomicInteger(0);
     public static final AtomicInteger ON_ERROR_COUNT = new AtomicInteger(0);
     public static final AtomicInteger ON_ERROR_WITH_METADATA_COUNT = new AtomicInteger(0);
-    public static final AtomicInteger ON_ACKNOWLEDGEMENT_COUNT = new AtomicInteger(0);
     public static final AtomicReference<ClusterResource> CLUSTER_META = new AtomicReference<>();
     public static final ClusterResource NO_CLUSTER_ID = new ClusterResource("no_cluster_id");
     public static final AtomicReference<ClusterResource> CLUSTER_ID_BEFORE_ON_ACKNOWLEDGEMENT = new AtomicReference<>(NO_CLUSTER_ID);
@@ -55,18 +51,13 @@ public class MockProducerInterceptor implements ClusterResourceListener, Produce
         Object o = configs.get(APPEND_STRING_PROP);
         if (o == null)
             throw new ConfigException("Mock producer interceptor expects configuration " + APPEND_STRING_PROP);
-        if (o instanceof String)
+        if (o != null && o instanceof String)
             appendStr = (String) o;
 
         // clientId also must be in configs
         Object clientIdValue = configs.get(ProducerConfig.CLIENT_ID_CONFIG);
         if (clientIdValue == null)
             throw new ConfigException("Mock producer interceptor expects configuration " + ProducerConfig.CLIENT_ID_CONFIG);
-
-        CONFIG_COUNT.incrementAndGet();
-        if (CONFIG_COUNT.get() == THROW_ON_CONFIG_EXCEPTION_THRESHOLD.get()) {
-            throw new ConfigException("Failed to instantiate interceptor. Reached configuration exception threshold.");
-        }
     }
 
     @Override
@@ -78,7 +69,6 @@ public class MockProducerInterceptor implements ClusterResourceListener, Produce
 
     @Override
     public void onAcknowledgement(RecordMetadata metadata, Exception exception) {
-        ON_ACKNOWLEDGEMENT_COUNT.incrementAndGet();
         // This will ensure that we get the cluster metadata when onAcknowledgement is called for the first time
         // as subsequent compareAndSet operations will fail.
         CLUSTER_ID_BEFORE_ON_ACKNOWLEDGEMENT.compareAndSet(NO_CLUSTER_ID, CLUSTER_META.get());
@@ -97,16 +87,10 @@ public class MockProducerInterceptor implements ClusterResourceListener, Produce
         CLOSE_COUNT.incrementAndGet();
     }
 
-    public static void setThrowOnConfigExceptionThreshold(int value) {
-        THROW_ON_CONFIG_EXCEPTION_THRESHOLD.set(value);
-    }
-
     public static void resetCounters() {
         INIT_COUNT.set(0);
         CLOSE_COUNT.set(0);
         ONSEND_COUNT.set(0);
-        CONFIG_COUNT.set(0);
-        THROW_CONFIG_EXCEPTION.set(0);
         ON_SUCCESS_COUNT.set(0);
         ON_ERROR_COUNT.set(0);
         ON_ERROR_WITH_METADATA_COUNT.set(0);

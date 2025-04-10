@@ -17,38 +17,10 @@
 package org.apache.kafka.streams.state;
 
 import org.apache.kafka.streams.KeyValue;
+import org.apache.kafka.streams.processor.ProcessorContext;
 import org.apache.kafka.streams.processor.StateStore;
-import org.apache.kafka.streams.processor.StateStoreContext;
-import org.apache.kafka.streams.query.Position;
-
-import java.time.Instant;
-import java.util.NoSuchElementException;
 
 public class NoOpWindowStore implements ReadOnlyWindowStore, StateStore {
-
-    private static class EmptyWindowStoreIterator implements WindowStoreIterator<KeyValue> {
-
-        @Override
-        public void close() {
-        }
-
-        @Override
-        public Long peekNextKey() {
-            throw new NoSuchElementException();
-        }
-
-        @Override
-        public boolean hasNext() {
-            return false;
-        }
-
-        @Override
-        public KeyValue<Long, KeyValue> next() {
-            throw new NoSuchElementException();
-        }
-    }
-
-    private static final WindowStoreIterator<KeyValue> EMPTY_WINDOW_STORE_ITERATOR = new EmptyWindowStoreIterator();
 
     @Override
     public String name() {
@@ -56,7 +28,9 @@ public class NoOpWindowStore implements ReadOnlyWindowStore, StateStore {
     }
 
     @Override
-    public void init(final StateStoreContext stateStoreContext, final StateStore root) {}
+    public void init(final ProcessorContext context, final StateStore root) {
+
+    }
 
     @Override
     public void flush() {
@@ -79,61 +53,12 @@ public class NoOpWindowStore implements ReadOnlyWindowStore, StateStore {
     }
 
     @Override
-    public Position getPosition() {
-        throw new UnsupportedOperationException("Position handling not implemented");
-    }
-
-    @Override
-    public Object fetch(final Object key, final long time) {
+    public WindowStoreIterator fetch(final Object key, final long timeFrom, final long timeTo) {
         return null;
     }
 
     @Override
-    public WindowStoreIterator fetch(final Object key, final Instant timeFrom, final Instant timeTo) throws IllegalArgumentException {
-        return EMPTY_WINDOW_STORE_ITERATOR;
-    }
-
-    @Override
-    public WindowStoreIterator backwardFetch(final  Object key,
-                                             final Instant timeFrom,
-                                             final Instant timeTo) throws IllegalArgumentException {
-        return EMPTY_WINDOW_STORE_ITERATOR;
-    }
-
-    @Override
-    public KeyValueIterator fetch(final Object keyFrom,
-                                  final Object keyTo,
-                                  final Instant timeFrom,
-                                  final Instant timeTo) throws IllegalArgumentException {
-        return EMPTY_WINDOW_STORE_ITERATOR;
-    }
-
-    @Override
-    public KeyValueIterator backwardFetch(final Object from,
-                                          final Object keyTo,
-                                          final Instant timeFrom,
-                                          final Instant timeTo) throws IllegalArgumentException {
-        return EMPTY_WINDOW_STORE_ITERATOR;
-    }
-
-    @Override
-    public WindowStoreIterator<KeyValue> all() {
-        return EMPTY_WINDOW_STORE_ITERATOR;
-    }
-
-    @Override
-    public WindowStoreIterator<KeyValue> backwardAll() {
-        return EMPTY_WINDOW_STORE_ITERATOR;
-    }
-
-    @Override
-    public KeyValueIterator fetchAll(final Instant timeFrom, final Instant timeTo) throws IllegalArgumentException {
-        return EMPTY_WINDOW_STORE_ITERATOR;
-    }
-
-    @Override
-    public KeyValueIterator backwardFetchAll(final Instant timeFrom,
-                                             final Instant timeTo) throws IllegalArgumentException {
-        return EMPTY_WINDOW_STORE_ITERATOR;
+    public WindowStoreIterator<KeyValue> fetch(Object from, Object to, long timeFrom, long timeTo) {
+        return null;
     }
 }

@@ -17,11 +17,11 @@
 
 package kafka.api
 
-import kafka.utils.TestUtils
+import java.io.File
 
 import org.apache.kafka.common.security.auth.SecurityProtocol
 
 class SslProducerSendTest extends BaseProducerSendTest {
   override protected def securityProtocol = SecurityProtocol.SSL
-  override protected lazy val trustStoreFile = Some(TestUtils.tempFile("truststore", ".jks"))
+  override protected lazy val trustStoreFile = Some(File.createTempFile("truststore", ".jks"))
 }

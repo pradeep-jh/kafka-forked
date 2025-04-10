@@ -16,46 +16,51 @@
  */
 package org.apache.kafka.common.security.authenticator;
 
-import org.apache.kafka.common.config.SaslConfigs;
-import org.apache.kafka.common.security.auth.AuthenticateCallbackHandler;
+import java.io.IOException;
+import java.util.Map;
 
+import org.apache.kafka.common.security.JaasContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.List;
-import java.util.Map;
-
+import javax.security.auth.Subject;
 import javax.security.auth.callback.Callback;
 import javax.security.auth.callback.UnsupportedCallbackException;
-import javax.security.auth.login.AppConfigurationEntry;
 import javax.security.sasl.AuthorizeCallback;
 import javax.security.sasl.RealmCallback;
 
+import org.apache.kafka.common.network.Mode;
+
 /**
- * Default callback handler for Sasl servers. The callbacks required for all the SASL
+ * Callback handler for Sasl servers. The callbacks required for all the SASL
  * mechanisms enabled in the server should be supported by this callback handler. See
  * <a href="https://docs.oracle.com/javase/8/docs/technotes/guides/security/sasl/sasl-refguide.html">Java SASL API</a>
  * for the list of SASL callback handlers required for each SASL mechanism.
  */
-public class SaslServerCallbackHandler implements AuthenticateCallbackHandler {
+public class SaslServerCallbackHandler implements AuthCallbackHandler {
     private static final Logger LOG = LoggerFactory.getLogger(SaslServerCallbackHandler.class);
+    private final JaasContext jaasContext;
 
-    private String mechanism;
+    public SaslServerCallbackHandler(JaasContext jaasContext) throws IOException {
+        this.jaasContext = jaasContext;
+    }
 
     @Override
-    public void configure(Map<String, ?> configs, String mechanism, List<AppConfigurationEntry> jaasConfigEntries) {
-        this.mechanism = mechanism;
+    public void configure(Map<String, ?> configs, Mode mode, Subject subject, String saslMechanism) {
+    }
+
+    public JaasContext jaasContext() {
+        return jaasContext;
     }
 
     @Override
     public void handle(Callback[] callbacks) throws UnsupportedCallbackException {
         for (Callback callback : callbacks) {
-            if (callback instanceof RealmCallback)
+            if (callback instanceof RealmCallback) {
                 handleRealmCallback((RealmCallback) callback);
-            else if (callback instanceof AuthorizeCallback && mechanism.equals(SaslConfigs.GSSAPI_MECHANISM))
+            } else if (callback instanceof AuthorizeCallback) {
                 handleAuthorizeCallback((AuthorizeCallback) callback);
-            else
-                throw new UnsupportedCallbackException(callback);
+            }
         }
     }
 
